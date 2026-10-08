@@ -7,34 +7,40 @@
 #   - id: dsh-voice-chat
 #     name: 'dsh-voice-chat'
 #     config:
-#       # 语音识别设置
-#       asrEngine: siliconflow          # siliconflow | groq | mimo | custom（语音转文字）
-#       asrApiKey: sk-xxxx              # ASR 密钥（旧式单槽：作用于当前引擎；也可用环境变量 DSH_VOICE_ASR_KEY）
+#       # Настройки распознавания речи
+#       asrEngine: siliconflow          # siliconflow | groq | mimo | custom | browser | local（речь в текст）
+#       asrApiKey: sk-xxxx              # ASR ключ (старый формат: действует на текущий движок; или переменная окружения DSH_VOICE_ASR_KEY)
 #       asrBaseUrl: https://api.siliconflow.cn/v1
 #       asrModel: FunAudioLLM/SenseVoiceSmall
-#       asr:                            # 按引擎隔离的 ASR 配置（优先于上面的扁平键）
+#       asr:                            # Конфигурация ASR по движкам (приоритет над плоскими ключами выше)
+#         local:  { baseUrl: http://127.0.0.1:8765/v1, model: small }   # офлайн faster-whisper (tiny|base|small|medium|large-v3)
 #         custom: { baseUrl: https://your-host/v1, model: whisper-v3, apiKey: sk-xxxx }
-#       llmModel: deepseek-v4-flash     # 回复转述模型（复用 harness 自带的 LLM，无需密钥；可选 deepseek-v4-pro）
-#       silenceMs: 2500                 # 静音多少毫秒后自动结束录音
-#       # 朗读设置
-#       rewrite: true                   # 是否用 LLM 把回复转述后再朗读
-#       ttsEngine: edge                 # TTS 引擎：edge（微软 Edge TTS，免费）| mimo | custom（自定义 TTS，OpenAI 兼容接口）
-#       voice: zh-CN-XiaoxiaoNeural     # Edge 音色（等价于 tts.edge.voice）
-#       ttsBaseUrl: https://api.openai.com/v1  # 旧式单槽：作用于当前引擎（ttsEngine=custom 时必填）
-#       ttsModel: tts-1                 # 旧式单槽模型名
-#       ttsApiKey: sk-xxxx              # 旧式单槽密钥
-#       tts:                            # 按引擎隔离的 TTS 配置（优先于上面的扁平键）
-#         edge:   { voice: zh-CN-XiaoxiaoNeural }
+#       llmModel: deepseek-v4-flash     # Модель для пересказа ответов (использует LLM из harness, ключ не нужен; опционально deepseek-v4-pro)
+#       silenceMs: 2500                 # Через сколько миллисекунд тишины автоматически завершить запись
+#       continuousMode: false           # «Постоянный диалог»: микрофон включается сам, речь перебивает озвучку
+#       # Настройки озвучивания
+#       rewrite: true                   # Использовать LLM для пересказа ответа перед озвучиванием
+#       ttsEngine: edge                 # TTS движок: edge (Microsoft Edge TTS, бесплатно) | mimo | custom (пользовательский TTS, OpenAI-совместимый API) | browser (speechSynthesis) | local (Piper, офлайн)
+#       voice: ru-RU-SvetlanaNeural     # Голос Edge (эквивалентно tts.edge.voice)
+#       ttsBaseUrl: https://api.openai.com/v1  # Старый формат: действует на текущий движок (обязательно при ttsEngine=custom)
+#       ttsModel: tts-1                 # Старый формат: имя модели
+#       ttsApiKey: sk-xxxx              # Старый формат: ключ
+#       tts:                            # Конфигурация TTS по движкам (приоритет над плоскими ключами выше)
+#         edge:   { voice: ru-RU-SvetlanaNeural }
+#         local:  { baseUrl: http://127.0.0.1:8765/v1, model: piper, voice: ru_RU-irina-medium }
 #         mimo:   { baseUrl: https://api.xiaomimimo.com/v1, model: mimo-v2.5-tts, apiKey: sk-xxxx, voice: 冰糖 }
 #         custom: { baseUrl: https://api.openai.com/v1, model: tts-1, apiKey: sk-xxxx, voice: alloy }
-#       rate: '+10%'                    # 语速（'+15%' 更快，'+0%' 原速）
-#       shortTextChars: 50              # 短于此字数的回复直接原样读、不转述
+#       rate: '+10%'                    # Скорость речи ('+15%' быстрее, '+0%' обычная)
+#       ratePercent: 110                # Скорость речи в процентах (50-200, 100 = нормальная)
+#       speechLang: ru-RU               # Язык озвучки (ru-RU | zh-CN | en-US | ja-JP)
+#       shortTextChars: 50              # Ответы короче этого количества символов озвучиваются как есть, без пересказа
 #
-# 提示：ASR/TTS 每个引擎各存一份配置（asr.<引擎> / tts.<引擎>），切换引擎不会互相
-# 覆盖；旧版扁平键仍兼容（只作用于当前选中的引擎）。设置面板（settings.local.json）
-# 优先级高于本文件。
+# Подсказка: ASR/TTS для каждого движка хранит свою конфигурацию (asr.<движок> / tts.<движок>), переключение
+# движков не перезаписывает настройки друг друга; старые плоские ключи совместимы (действуют только
+# на текущий выбранный движок). Панель настроек (settings.local.json) имеет приоритет
+# над этим файлом.
 #
-# 不改配置时全部使用默认值（如上注释所示）。
+# Если не менять конфигурацию, используются значения по умолчанию (указаны в комментариях выше).
 - insert:
     - id: dsh-voice-chat
       name: 'dsh-voice-chat'

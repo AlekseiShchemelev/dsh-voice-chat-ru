@@ -1,0 +1,7 @@
+url: https://github.com/AlekseiShchemelev/dsh-voice-chat-ru
+name: AlekseiShchemelev/dsh-voice-chat-ru
+category: voice
+description:
+  en: 'Russian fork of the Doubao-style voice chat plugin for DSH: press the mic in the composer to turn speech into text and auto-send, and AI replies are read aloud. UI and prompts in Russian, speech language switch (ru/zh/en/ja), speech-rate slider (50–200%), continuous live dialog with voice barge-in, six ASR engines (SiliconFlow, Groq, MiMo, OpenAI-compatible, browser Web Speech, offline faster-whisper) and five TTS engines (Edge TTS, MiMo TTS, OpenAI-compatible, browser speechSynthesis, offline Piper), with per-engine isolated settings.'
+  zh: '豆包式语音对话插件的俄语分支：聊天框麦克风按钮语音转文字并自动发送，AI 回复自动朗读。界面与提示词为俄语，可切换语音语言（ru/zh/en/ja）与语速（50–200%），支持「持续对话」与语音打断；ASR 六选一（SiliconFlow、Groq、MiMo、OpenAI 兼容、浏览器 Web Speech、离线 faster-whisper），TTS 五选一（Edge TTS、MiMo TTS、OpenAI 兼容、浏览器 speechSynthesis、离线 Piper），各引擎配置互相隔离。'
+  ru: 'Русский форк плагина голосового чата для DSH: кнопка микрофона в поле ввода превращает речь в текст и отправляет его автоматически, ответы AI озвучиваются. Интерфейс и подсказки на русском, выбор языка речи (ru/zh/en/ja) и скорости озвучки (50–200%), режим «Постоянный диалог» с перебиванием голосом. Шесть движков распознавания (SiliconFlow, Groq, MiMo, OpenAI-совместимый, браузерный Web Speech, офлайн faster-whisper) и пять движков озвучки (Edge TTS, MiMo TTS, OpenAI-совместимый, браузерный speechSynthesis, офлайн Piper) с изолированными настройками каждого движка.'

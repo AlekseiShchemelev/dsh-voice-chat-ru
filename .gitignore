@@ -2,3 +2,4 @@ node_modules/
 pnpm-workspace.yaml
 *.mp3
 settings.local.json
+__pycache__/

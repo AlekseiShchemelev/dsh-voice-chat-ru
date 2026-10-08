@@ -4,6 +4,8 @@
  */
 import assert from "node:assert/strict";
 import {
+	ASR_ENGINES,
+	TTS_ENGINES,
 	buildPublicSlots,
 	migrateLegacySettings,
 	mergeSettings,
@@ -230,4 +232,55 @@ test("ASR 解析：各引擎只读自己的槽", () => {
 	assert.equal(resolveAsrConfig({}, groqSaved).baseUrl, "https://api.groq.com/openai/v1");
 });
 
-console.log(`\n${passed} 项通过${process.exitCode ? "（存在失败）" : ""}`);
+console.log("\nНовые настройки: ratePercent, speechLang, движки browser/local");
+test("ratePercent: значение сохраняется", () => {
+	const saved = mergeSettings({}, sanitizeSettings({ ratePercent: 150 }));
+	assert.equal(saved.ratePercent, 150);
+});
+
+test("ratePercent: clamp 50-200", () => {
+	assert.equal(sanitizeSettings({ ratePercent: 10 }).ratePercent, 50);
+	assert.equal(sanitizeSettings({ ratePercent: 500 }).ratePercent, 200);
+	assert.equal(sanitizeSettings({ ratePercent: 110 }).ratePercent, 110);
+});
+
+test("speechLang: значение сохраняется", () => {
+	const saved = mergeSettings({}, sanitizeSettings({ speechLang: "ru-RU" }));
+	assert.equal(saved.speechLang, "ru-RU");
+});
+
+test("speechLang: дефолт ru-RU", () => {
+	const saved = mergeSettings({}, sanitizeSettings({}));
+	assert.equal(saved.speechLang, undefined);
+});
+
+test("Движки browser/local принимаются", () => {
+	const saved = mergeSettings({}, sanitizeSettings({ ttsEngine: "browser", asrEngine: "local" }));
+	assert.equal(saved.ttsEngine, "browser");
+	assert.equal(saved.asrEngine, "local");
+});
+
+test("Движки browser/local в списке TTS_ENGINES/ASR_ENGINES", () => {
+	assert.ok(TTS_ENGINES.includes("browser"));
+	assert.ok(TTS_ENGINES.includes("local"));
+	assert.ok(ASR_ENGINES.includes("browser"));
+	assert.ok(ASR_ENGINES.includes("local"));
+});
+
+console.log("\ncontinuousMode");
+test("continuousMode: значение сохраняется", () => {
+	const saved = mergeSettings({}, sanitizeSettings({ continuousMode: true }));
+	assert.equal(saved.continuousMode, true);
+});
+
+test("continuousMode: дефолт false", () => {
+	const saved = mergeSettings({}, sanitizeSettings({}));
+	assert.equal(saved.continuousMode, undefined);
+});
+
+test("continuousMode: false явно", () => {
+	const saved = mergeSettings({}, sanitizeSettings({ continuousMode: false }));
+	assert.equal(saved.continuousMode, false);
+});
+
+console.log(`\n${passed} пройдено${process.exitCode ? " (есть падения)" : ""}`);

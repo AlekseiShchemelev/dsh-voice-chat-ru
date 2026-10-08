@@ -124,13 +124,13 @@ function controlByLabel(tree, labelText) {
 		if (textOf(label) !== labelText) return;
 		found = kids[1];
 	});
-	assert.ok(found, `找不到字段「${labelText}」`);
+	assert.ok(found, `Поле не найдено: «${labelText}»`);
 	return found;
 }
 /** 找到某个 select/input 的 onChange 回调。 */
 function onChangeOf(tree, labelText) {
 	const control = controlByLabel(tree, labelText);
-	assert.equal(typeof control.props.onChange, "function", `字段「${labelText}」应有 onChange`);
+	assert.equal(typeof control.props.onChange, "function", `Поле «${labelText}» должно иметь onChange`);
 	return control.props.onChange;
 }
 
@@ -220,64 +220,64 @@ async function test(name, fn) {
 
 await render();
 
-console.log("设置表单按引擎回显（不串味）");
-await test("当前引擎 MiMo：显示 MiMo 自己的地址/密钥/音色", () => {
+	console.log("Форма настроек отображается по движкам (без смешивания)");
+await test("Текущий движок MiMo: отображаются собственные адрес/ключ/голос", () => {
 	assert.equal(controlByLabel(tree, "TTS Base URL").props.value, "https://api.xiaomimimo.com/v1");
-	assert.equal(controlByLabel(tree, "TTS API Key").props.value, "mimo-key");
-	assert.equal(controlByLabel(tree, "朗读音色（MiMo TTS）").props.value, "冰糖");
+	assert.equal(controlByLabel(tree, "API-ключ TTS").props.value, "mimo-key");
+	assert.equal(controlByLabel(tree, "Голос (MiMo TTS)").props.value, "冰糖");
 });
 
-await test("切到自定义 TTS：显示自定义自己的配置，看不到 MiMo 的值", () => {
-	onChangeOf(tree, "TTS 引擎")({ target: { value: "custom" } });
+await test("Переключение на пользовательский TTS: отображается его конфигурация, значения MiMo не видны", () => {
+	onChangeOf(tree, "Движок TTS")({ target: { value: "custom" } });
 	tree = renderOnce(Section, stub);
 	assert.equal(controlByLabel(tree, "TTS Base URL").props.value, "http://127.0.0.1:52992/v1");
-	assert.equal(controlByLabel(tree, "TTS 模型名称").props.value, "kokoro-82m-zh");
-	assert.equal(controlByLabel(tree, "TTS API Key").props.value, "custom-key");
-	assert.equal(controlByLabel(tree, "朗读音色（自定义 TTS）").props.value, "Mia");
+	assert.equal(controlByLabel(tree, "Модель TTS").props.value, "kokoro-82m-zh");
+	assert.equal(controlByLabel(tree, "API-ключ TTS").props.value, "custom-key");
+	assert.equal(controlByLabel(tree, "Голос (Пользовательский TTS)").props.value, "Mia");
 });
 
-await test("切到 Edge：只显示 Edge 自己的音色（不会带出 Mia/冰糖）", () => {
-	onChangeOf(tree, "TTS 引擎")({ target: { value: "edge" } });
+await test("Переключение на Edge: отображается только его голос (Mia/冰糖 не появляются)", () => {
+	onChangeOf(tree, "Движок TTS")({ target: { value: "edge" } });
 	tree = renderOnce(Section, stub);
-	assert.equal(controlByLabel(tree, "朗读音色（Edge TTS）").props.value, "zh-CN-YunxiNeural");
+	assert.equal(controlByLabel(tree, "Голос (Edge TTS)").props.value, "zh-CN-YunxiNeural");
 });
 
-await test("切回 MiMo：MiMo 的配置原封不动（没被 custom 覆盖）", () => {
-	onChangeOf(tree, "TTS 引擎")({ target: { value: "mimo" } });
+await test("Возврат к MiMo: конфигурация MiMo не изменилась (не перезаписана custom)", () => {
+	onChangeOf(tree, "Движок TTS")({ target: { value: "mimo" } });
 	tree = renderOnce(Section, stub);
 	assert.equal(controlByLabel(tree, "TTS Base URL").props.value, "https://api.xiaomimimo.com/v1");
-	assert.equal(controlByLabel(tree, "TTS API Key").props.value, "mimo-key");
-	assert.equal(controlByLabel(tree, "朗读音色（MiMo TTS）").props.value, "冰糖");
+	assert.equal(controlByLabel(tree, "API-ключ TTS").props.value, "mimo-key");
+	assert.equal(controlByLabel(tree, "Голос (MiMo TTS)").props.value, "冰糖");
 });
 
-await test("改 ASR 引擎看各自槽：custom 与 mimo 互不影响", () => {
+await test("Смена движка ASR: слоты custom и mimo не влияют друг на друга", () => {
 	assert.equal(controlByLabel(tree, "ASR Base URL").props.value, "http://127.0.0.1:52625/v1");
-	assert.equal(controlByLabel(tree, "ASR API Key").props.value, "flm");
-	onChangeOf(tree, "ASR 引擎")({ target: { value: "mimo" } });
+	assert.equal(controlByLabel(tree, "API-ключ ASR").props.value, "flm");
+	onChangeOf(tree, "Движок ASR")({ target: { value: "mimo" } });
 	tree = renderOnce(Section, stub);
 	assert.equal(controlByLabel(tree, "ASR Base URL").props.value, "https://api.xiaomimimo.com/v1/chat/completions");
-	assert.equal(controlByLabel(tree, "ASR API Key").props.value, "");
-	onChangeOf(tree, "ASR 引擎")({ target: { value: "custom" } });
+	assert.equal(controlByLabel(tree, "API-ключ ASR").props.value, "");
+	onChangeOf(tree, "Движок ASR")({ target: { value: "custom" } });
 	tree = renderOnce(Section, stub);
-	assert.equal(controlByLabel(tree, "ASR API Key").props.value, "flm");
+	assert.equal(controlByLabel(tree, "API-ключ ASR").props.value, "flm");
 });
 
-console.log("\n保存只提交当前引擎的槽");
-await test("保存 MiMo：tts 里只有 mimo，ASR 只有自定义那份", async () => {
+console.log("\nСохранение отправляет только слот текущего движка");
+await test("Сохранение MiMo: в tts только mimo, в ASR только пользовательский", async () => {
 	posts.length = 0;
 	const saveBtn = (() => {
 		let found = null;
 		walk(tree, (node) => {
-			if (!found && node.type === "button" && textOf(node).includes("保存")) found = node;
+			if (!found && node.type === "button" && textOf(node).includes("Сохранить")) found = node;
 		});
 		return found;
 	})();
-	assert.ok(saveBtn, "应有保存按钮");
+	assert.ok(saveBtn, "Должна быть кнопка сохранения");
 	saveBtn.props.onClick();
 	await flush();
-	assert.equal(posts.length, 1, "应发出一次 POST");
+	assert.equal(posts.length, 1, "Должен быть отправлен один POST");
 	const body = posts[0].body;
-	assert.deepEqual(Object.keys(body.tts), ["mimo"], "只提交当前引擎的 TTS 槽");
+	assert.deepEqual(Object.keys(body.tts), ["mimo"], "Отправляется только слот TTS текущего движка");
 	assert.deepEqual(body.tts.mimo, {
 		baseUrl: "https://api.xiaomimimo.com/v1",
 		model: "mimo-v2.5-tts",
@@ -286,33 +286,49 @@ await test("保存 MiMo：tts 里只有 mimo，ASR 只有自定义那份", async
 	});
 	assert.deepEqual(Object.keys(body.asr), ["custom"]);
 	assert.equal(body.ttsEngine, "mimo");
-	assert.equal(body.ttsConfig, undefined, "不应把整份回显（含其它引擎）回写");
-	// 兼容旧宿主的扁平键 = 当前引擎的值
+	assert.equal(body.ttsConfig, undefined, "Не должна возвращаться вся конфигурация (включая другие движки)");
+	// Плоские ключи для совместимости со старым хостом = значения текущего движка
 	assert.equal(body.ttsBaseUrl, "https://api.xiaomimimo.com/v1");
 	assert.equal(body.ttsApiKey, "mimo-key");
 	assert.equal(body.ttsVoice, "冰糖");
 	assert.equal(body.asrBaseUrl, "http://127.0.0.1:52625/v1");
 });
 
-await test("切到 Edge 后保存：只交音色，不带 MiMo/自定义的地址与密钥", async () => {
-	onChangeOf(tree, "TTS 引擎")({ target: { value: "edge" } });
+await test("Сохранение после переключения на Edge: отправляется только голос, без адресов и ключей MiMo/пользовательского", async () => {
+	onChangeOf(tree, "Движок TTS")({ target: { value: "edge" } });
 	tree = renderOnce(Section, stub);
 	posts.length = 0;
 	let saveBtn = null;
 	walk(tree, (node) => {
-		if (!saveBtn && node.type === "button" && textOf(node).includes("保存")) saveBtn = node;
+		if (!saveBtn && node.type === "button" && textOf(node).includes("Сохранить")) saveBtn = node;
 	});
 	saveBtn.props.onClick();
 	await flush();
 	const body = posts[0].body;
 	assert.deepEqual(body.tts, { edge: { voice: "zh-CN-YunxiNeural" } });
-	assert.equal(body.ttsBaseUrl, "", "Edge 不该提交别的引擎的地址");
+	assert.equal(body.ttsBaseUrl, "", "Edge не должен отправлять адреса других движков");
 	assert.equal(body.ttsApiKey, "");
 	assert.equal(body.ttsModel, "");
 });
 
-console.log("\n旧宿主回显（没有 asrConfig/ttsConfig）时的兜底");
-await test("旧宿主只给扁平键：只当成当前引擎的槽值", async () => {
+console.log("\ncontinuousMode");
+await test("Чекбокс «Постоянный диалог» существует", () => {
+	const checkbox = (() => {
+		let found = null;
+		walk(tree, (node) => {
+			if (!found && node.type === "label") {
+				const kids = node.children || [];
+				const text = textOf(node);
+				if (text.includes("Постоянный диалог")) found = node;
+			}
+		});
+		return found;
+	})();
+	assert.ok(checkbox, "Должен быть чекбокс «Постоянный диалог»");
+});
+
+console.log("\nСтарый хост (без asrConfig/ttsConfig): запасной вариант");
+await test("Старый хост даёт только плоские ключи: используются как слот текущего движка", async () => {
 	const legacy = {
 		asrEngine: "custom", asrBaseUrl: "http://127.0.0.1:52625/v1", asrModel: "whisper-v3", asrApiKey: "flm",
 		ttsEngine: "edge", ttsVoice: "zh-CN-XiaoxiaoNeural",
@@ -326,12 +342,12 @@ await test("旧宿主只给扁平键：只当成当前引擎的槽值", async ()
 	for (let i = 0; i < 5; i++) await Promise.resolve();
 	t2 = renderOnce(Section2, stub2);
 	t2 = renderOnce(Section2, stub2);
-	// edge 是当前引擎 → 音色是扁平键里的 edge 音色；扁平 URL/密钥不会显示在 edge 表单
-	assert.equal(controlByLabel(t2, "朗读音色（Edge TTS）").props.value, "zh-CN-XiaoxiaoNeural");
-	onChangeOf(t2, "TTS 引擎")({ target: { value: "custom" } });
+	// edge — текущий движок → голос из плоского ключа edge; плоские URL/ключ не отображаются в форме edge
+	assert.equal(controlByLabel(t2, "Голос (Edge TTS)").props.value, "zh-CN-XiaoxiaoNeural");
+	onChangeOf(t2, "Движок TTS")({ target: { value: "custom" } });
 	t2 = renderOnce(Section2, stub2);
-	assert.equal(controlByLabel(t2, "TTS Base URL").props.value, "", "旧宿主的扁平地址只能归当前引擎(edge)，不能凭空当成 custom 的");
-	assert.equal(controlByLabel(t2, "ASR Base URL").props.value, "http://127.0.0.1:52625/v1", "ASR 当前引擎是 custom，扁平键归它");
+	assert.equal(controlByLabel(t2, "TTS Base URL").props.value, "", "Плоский адрес старого хоста относится только к текущему движку (edge), не может быть принят за custom");
+	assert.equal(controlByLabel(t2, "ASR Base URL").props.value, "http://127.0.0.1:52625/v1", "Текущий движок ASR — custom, плоские ключи относятся к нему");
 });
 
-console.log(`\n${passed} 项通过${process.exitCode ? "（存在失败）" : ""}`);
+console.log(`\n${passed} пройдено${process.exitCode ? " (есть падения)" : ""}`);

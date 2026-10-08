@@ -1,15 +1,24 @@
 {
   "name": "dsh-voice-chat",
-  "version": "0.4.1",
-  "description": "豆包式语音对话客户端插件：麦克风按钮→语音转文字发送→回复自动朗读（支持 Edge TTS / MiMo TTS / 自定义 TTS）。",
+  "version": "0.5.0",
+  "description": "Русский форк плагина голосового чата для DSH: кнопка микрофона → речь в текст → автоотправка, ответы AI озвучиваются. ASR: SiliconFlow / Groq / MiMo / OpenAI-совместимый / браузер / локальный faster-whisper. TTS: Edge / MiMo / OpenAI-совместимый / браузер / локальный Piper. Постоянный диалог, скорость и язык речи.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/maoyuching/dsh-voice-chat.git"
+    "url": "git+https://github.com/AlekseiShchemelev/dsh-voice-chat-ru.git"
+  },
+  "homepage": "https://github.com/AlekseiShchemelev/dsh-voice-chat-ru#readme",
+  "bugs": {
+    "url": "https://github.com/AlekseiShchemelev/dsh-voice-chat-ru/issues"
   },
   "type": "module",
   "main": "lib/index.js",
   "scripts": {
-    "test": "node test/settings.test.mjs && node test/client-settings.test.mjs && node test/host-smoke.mjs"
+    "test": "node test/settings.test.mjs && node test/client-settings.test.mjs && node test/host-smoke.mjs && node test/index-unit.test.mjs && node test/local-engine.test.mjs && node test/live-dialog.test.mjs",
+    "test:settings": "node test/settings.test.mjs && node test/client-settings.test.mjs && node test/host-smoke.mjs",
+    "test:unit": "node test/index-unit.test.mjs",
+    "test:local": "node test/local-engine.test.mjs",
+    "test:live": "node test/live-dialog.test.mjs",
+    "diagnose:tts": "node test/diagnose-tts.mjs"
   },
   "exports": {
     ".": {
@@ -22,6 +31,7 @@
   },
   "files": [
     "lib",
+    "py",
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
@@ -54,7 +64,13 @@
     "edge-tts",
     "voice-chat",
     "mimo",
-    "xiaomi"
+    "xiaomi",
+    "russian",
+    "speech-lang",
+    "piper",
+    "faster-whisper",
+    "offline",
+    "continuous-dialog"
   ],
   "engines": {
     "node": ">=22"

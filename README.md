@@ -1,104 +1,130 @@
-# dsh-voice-chat
+# dsh-voice-chat (русский форк)
 
-<p align="center"><b>中文</b> | <a href="README.en.md">English</a></p>
+<p align="center"><b>Русский</b> | <a href="README.en.md">English</a></p>
 
-豆包式语音对话插件（[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI）：点一下 🎤 说话，AI 回复自动用语音"汇报"给你。
+Плагин голосового диалога для [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI: нажми 🎤 и говори, ответы AI автоматически озвучиваются. Интерфейс, подсказки и системные промпты — на русском, речь по умолчанию русская.
 
-> 📖 完整使用手册见 [MANUAL.md](MANUAL.md)（安装/操作/配置/FAQ/原理）。
+> 📖 Полное руководство пользователя см. в [MANUAL.md](MANUAL.md) (установка / использование / настройка / FAQ / принцип работы).
+>
+> Форк [maoyuching/dsh-voice-chat](https://github.com/maoyuching/dsh-voice-chat) (MIT). Оригинал — автор maoyuching; здесь добавлены русская локализация, выбор языка и скорости речи, браузерные и офлайновые движки, «Постоянный диалог» с перебиванием.
 
-## 功能
+## Возможности
 
-- **语音输入**：点 🎤 开始聆听（"叮"提示音）→ 说话 → 停顿 2.5s 自动结束（"咚"）→ 转写并发送；
-- **语音输出**：AI 回复经 TTS 合成朗读，语速 +10%；设置里可开「**转述朗读**」（默认关闭）——开启后较长回复会先由 LLM 以"助手本人"口吻**收敛转述**（≤原文长度、不发散、去代码表格）再播报，**转述用模型自动跟随当前对话在用的 LLM**；
-- **ASR 引擎**：支持 **SiliconFlow**（SenseVoice，国内免费）、**Groq**（Whisper）、**小米 MiMo**（chat/completions 协议）、**自定义 OpenAI 兼容**端点，在设置页面切换；
-- **TTS 引擎**：支持 **Edge TTS**（微软免费）、**小米 MiMo TTS**（chat/completions 协议，内置多款中文音色）、**自定义 TTS**（OpenAI 兼容接口）；
-- **引擎配置隔离**：ASR/TTS 每个引擎各存一份 Base URL / 模型 / API Key / 音色，切换引擎不会互相覆盖（旧版单份配置自动迁移）；
-- **单信道播报**：新回复抢占旧播报、按快捷键/点按钮立即打断，同一时刻只有一种声音；
-- **防重播**：按会话记住已播报的回复，重进会话不重复朗读；
-- **静音开关** 🔊：正在播报时点它立刻静音，再点恢复自动朗读；
-- **设置入口**：DSH 自带设置弹窗（左下角齿轮 → 左侧「voice chat」类目），保存即生效无需重启；
-- **快捷键**：`Ctrl+Shift+Space` 切换麦克风（备用 `Ctrl+M` / `Ctrl+Shift+M`）。
+- **Голосовой ввод**: нажми 🎤 для начала записи (сигнал «динь») → говори → пауза для автоматического завершения («дон») → распознавание и отправка;
+- **Голосовой вывод**: ответы AI синтезируются через TTS и озвучиваются; в настройках есть **ползунок скорости речи** (50–200 %) и **выбор языка речи** (ru-RU / zh-CN / en-US / ja-JP), а также переключатель «**сокращать длинные ответы перед озвучкой**» (по умолчанию выключен) — при включении длинные ответы сначала **сжимаются и пересказываются** LLM от лица «самого помощника», затем озвучиваются; **модель для пересказа автоматически использует текущую LLM диалога**;
+- **6 движков распознавания речи (ASR)**: **SiliconFlow** (SenseVoice, бесплатный лимит), **Groq** (Whisper), **Xiaomi MiMo** (протокол chat/completions), **пользовательский OpenAI-совместимый**, **браузерный** (Web Speech API, без ключа и сети), **локальный** (faster-whisper, полностью офлайн);
+- **5 движков озвучки (TTS)**: **Edge TTS** (Microsoft, бесплатно, без ключа), **Xiaomi MiMo TTS** (chat/completions, встроенные голоса), **пользовательский OpenAI-совместимый**, **браузерный** (`speechSynthesis`, офлайн), **локальный** (Piper, офлайн);
+- **Изоляция настроек движков**: каждый движок ASR/TTS хранит собственные Base URL / модель / API Key / голос, переключение движков не перезаписывает настройки друг друга (старая единая конфигурация мигрирует автоматически);
+- **Офлайн-режим**: локальный движок — faster-whisper (распознавание) + Piper (озвучка); плагин сам разворачивает portable Python, venv и модели в `~/.local/share/dsh-voice-chat/` и управляет процессом Python-сервера;
+- **Постоянный диалог (живое общение)**: галочка в настройках — после ответа AI микрофон включается сам, а речь поверх озвучки сразу её прерывает; нажать 🎤 ещё раз — цикл останавливается;
+- **Одноканальное воспроизведение**: новый ответ прерывает предыдущее воспроизведение, горячие клавиши и кнопка немедленно прерывают, в любой момент звучит только один голос;
+- **Защита от повторного воспроизведения**: запоминает озвученные ответы по сессиям, при повторном входе в сессию не озвучивает повторно;
+- **Переключатель звука** 🔊: нажми во время воспроизведения для мгновенного отключения звука, повторное нажатие восстанавливает автоматическое озвучивание;
+- **Панель настроек**: встроенный диалог настроек DSH (шестерёнка в левом нижнем углу → категория «голосовой чат»), изменения применяются сразу после сохранения, без перезапуска;
+- **Горячие клавиши**: `Ctrl+Shift+Space` для переключения микрофона (запасные `Ctrl+M` / `Ctrl+Shift+M`).
 
-## 环境要求
+## Системные требования
 
-- **DeepSeek Harness（dsh）**：已安装并运行 Web GUI（`dsh web`）；
-- **Node.js ≥ 22**（宿主与浏览器端均需要；edge-tts 客户端基于 `ws`，无需额外运行时）；
-- **浏览器**：Chrome / Edge（录音需要 `MediaRecorder` 支持）；
-- **ASR 密钥**：语音转文字需要（SiliconFlow 注册即有免费额度；MiMo 按用量计费）。
+- **DeepSeek Harness (dsh)**: установлен и запущен Web GUI (`dsh web`);
+- **Node.js ≥ 22** (единственная рантайм-зависимость — `ws` для встроенного edge-tts клиента);
+- **Браузер**: Chrome / Edge (для записи нужен `MediaRecorder`, для браузерных движков — `SpeechRecognition` / `speechSynthesis`);
+- **Ключ API** — нужен только для облачных движков. Edge TTS ключа не требует, браузерные движки работают без ключа, локальный движок работает офлайн.
 
-## 安装
+## Установка
 
 ```bash
-# 方式一（推荐，已发布到 npm）：
-dsh plugin --profile web add dsh-voice-chat
+# Из этого репозитория (форк, git-адрес):
+dsh plugin --profile web add https://github.com/AlekseiShchemelev/dsh-voice-chat-ru.git
 
-# 装完重启 dsh web
+# Затем перезапустите dsh web
 ```
 
-> 注：插件自带内联 edge-tts 客户端（微软 Edge 免费朗读服务，无需任何 API key）；Edge TTS 无需额外密钥，MiMo TTS / 自定义 TTS 则需配置对应密钥。
+Оригинальная версия ставится из npm:
 
-## 配置
+```bash
+dsh plugin --profile web add dsh-voice-chat
+```
 
-### ⚙️ 设置面板（推荐，优先级最高）
+> Плагин включает встроенный edge-tts клиент (бесплатная служба озвучивания Microsoft Edge, API key не требуется).
 
-打开 DSH 设置弹窗（左下角齿轮），左侧点「**voice chat**」，右侧即可改：
+## Настройка
 
-**🎤 语音识别设置**
-- ASR 引擎选择（SiliconFlow / Groq / MiMo / 自定义）
-- Base URL / 模型名 / API Key
-- 识别后是否自动发送
-- 静音自动结束时长（秒）
+### ⚙️ Панель настроек (рекомендуется, наивысший приоритет)
 
-**🔊 朗读设置**
-- TTS 引擎选择（Edge TTS / MiMo TTS / 自定义 TTS）
-- 各引擎对应的 Base URL / 模型名 / API Key / 音色
-- 长回复转述朗读开关（默认关闭）
+Откройте диалог настроек DSH (шестерёнка в левом нижнем углу), слева выберите «**голосовой чат**», справа можно изменить:
 
-> 🔒 **每个引擎的配置互相隔离**：ASR 的 4 个引擎、TTS 的 3 个引擎各自保存自己的
-> Base URL / 模型 / 密钥 / 音色，切换引擎只是"换看哪一份"，**不会互相覆盖**；
-> 保存时也只写当前编辑的那一份。旧版（≤0.3.x）的单份配置会在首次启动时自动
-> 迁移到对应引擎（MiMo 音色 → MiMo TTS、自定义地址/密钥 → 自定义 TTS，无损）。
+**🎤 Настройки распознавания речи**
+- Движок ASR (SiliconFlow / Groq / MiMo / пользовательский / браузерный / локальный)
+- Base URL / модель / API Key — отдельно для каждого движка
+- Автоматическая отправка после распознавания
+- Постоянный диалог (автопродолжение + перебивание голосом)
+- Длительность тишины для автоматического завершения (сек)
 
-保存后立即生效，无需重启。
+**🔊 Настройки озвучивания**
+- Движок TTS (Edge TTS / MiMo TTS / пользовательский / браузерный / локальный)
+- Base URL / модель / API Key / голос — отдельно для каждого движка
+- Ползунок **скорости речи** (50–200 %)
+- Выбор **языка речи** (Русский / Китайский / Английский / Японский)
+- Переключатель «сокращать длинные ответы перед озвучкой» (по умолчанию выключен)
 
-### 📄 配置文件（低优先级）
+> 🔒 **Настройки движков изолированы**: каждый движок ASR и TTS хранит свои Base URL / модель / ключ / голос отдельно. Переключение движка просто «переключает просмотр», **не перезаписывая** чужие настройки; при сохранении записывается только текущая редактируемая конфигурация. Старая единая конфигурация (≤0.3.x) автоматически мигрирует на соответствующий движок при первом запуске.
 
-在 profile 的 `~/.dsh/profiles/web/cordis.patch.yml` 里按 id 覆盖 config（全部可选项，不改则用默认值）：
+Изменения применяются сразу после сохранения, перезапуск не требуется.
+
+### 📄 Файл конфигурации (низкий приоритет)
+
+В файле profile `~/.dsh/profiles/web/cordis.patch.yml` можно переопределить config по id (все параметры необязательны):
 
 ```yaml
 - id: dsh-voice-chat
   name: 'dsh-voice-chat'
   config:
-    asrEngine: siliconflow          # siliconflow | groq | mimo | custom
-    asrApiKey: sk-xxxx              # ASR 密钥（旧式单槽，作用于当前引擎；或环境变量 DSH_VOICE_ASR_KEY）
-    asrBaseUrl: https://api.siliconflow.cn/v1
-    asrModel: FunAudioLLM/SenseVoiceSmall
-    asr:                            # 也可按引擎分别配置（优先于上面的扁平键）
+    asrEngine: siliconflow          # siliconflow | groq | mimo | custom | browser | local
+    asrApiKey: sk-xxxx              # старый формат, действует на текущий движок; или DSH_VOICE_ASR_KEY
+    asr:                            # конфигурация по движкам (приоритет над плоскими ключами)
+      local:  { baseUrl: http://127.0.0.1:8765/v1, model: small }
       custom: { baseUrl: http://127.0.0.1:8000/v1, model: whisper-v3, apiKey: sk-xxxx }
-    llmModel: deepseek-v4-flash     # 转述模型（fallback，正常跟随当前对话）
+    llmModel: deepseek-v4-flash     # модель для пересказа (fallback, обычно следует за текущим диалогом)
     silenceMs: 2500
-    rewrite: false                  # 转述朗读开关（默认关闭，设置页可切换）
-    ttsEngine: edge                 # edge | mimo | custom
-    voice: zh-CN-XiaoxiaoNeural     # Edge 音色（旧式，等价于 tts.edge.voice）
-    ttsBaseUrl: https://api.openai.com/v1   # 旧式单槽，作用于当前引擎
-    ttsModel: tts-1
-    ttsApiKey: sk-xxxx
-    tts:                            # 按引擎隔离的 TTS 配置（优先于上面的扁平键）
+    continuousMode: false           # «Постоянный диалог»
+    rewrite: false                  # сокращать длинные ответы перед озвучкой
+    ttsEngine: edge                 # edge | mimo | custom | browser | local
+    tts:                            # конфигурация TTS по движкам
+      edge:   { voice: ru-RU-SvetlanaNeural }
+      local:  { baseUrl: http://127.0.0.1:8765/v1, model: piper, voice: ru_RU-irina-medium }
       mimo:   { baseUrl: https://api.xiaomimimo.com/v1, model: mimo-v2.5-tts, apiKey: sk-xxxx, voice: 冰糖 }
       custom: { baseUrl: https://api.openai.com/v1, model: tts-1, apiKey: sk-xxxx, voice: alloy }
-    rate: '+10%'
+    ratePercent: 110                # скорость речи, 50–200 (100 = нормальная)
+    speechLang: ru-RU               # ru-RU | zh-CN | en-US | ja-JP
     shortTextChars: 50
 ```
 
-改完重启 `dsh web` 生效。优先级：**设置面板 > cordis.patch.yml（按引擎 > 旧式扁平键）> 环境变量 > 默认值**。
+После изменения перезапустите `dsh web`. Приоритет: **панель настроек > cordis.patch.yml (по движкам > старые плоские ключи) > переменные окружения > значения по умолчанию**.
 
-## 结构
+Полезные переменные окружения: `DSH_VOICE_ASR_ENGINE`, `DSH_VOICE_ASR_KEY`, `DSH_VOICE_ASR_BASE_URL`, `DSH_VOICE_ASR_MODEL`, `DSH_VOICE_LLM_KEY`, `DSH_VOICE_LLM_BASE_URL`, `DSH_VOICE_LLM_MODEL`, а для офлайн-движка — `DSH_VOICE_PYTHON` (свой интерпретатор вместо portable Python) и `DSH_VOICE_DATA_DIR` (каталог данных и моделей).
 
-- `lib/index.js` — 宿主半身：`/stt`（ASR，支持 OpenAI multipart 与 MiMo chat/completions 双协议）、`/tts`（Edge/MiMo/自定义 TTS）、`/speak`（转述+合成）、`/settings`（设置面板存取）等路由；
-- `lib/client.js` — 浏览器半身：麦克风/静音按钮、静音检测、单信道播报、快捷键（Ctrl+Shift+Space）、录音自动转 WAV（供 MiMo 等 chat 协议 ASR）；并向 DSH 设置弹窗注入「voice chat」类目表单（ASR/TTS 各引擎独立的表单槽）；
-- `lib/edge-tts.js` — 内联的 edge-tts 协议客户端（微软 Edge 免费朗读服务），唯一运行时依赖 `ws`；
-- `test/` — 设置层自测（`pnpm test` / `node test/settings.test.mjs`、`node test/client-settings.test.mjs`）：验证各引擎配置互不串味 + 旧配置迁移；
-- `test/diagnose-tts.mjs` — 朗读链路一键诊断（`node test/diagnose-tts.mjs`）：逐个引擎真实合成一次，并直连插件 `/tts`、`/speak` 处理函数，逐段报出问题在配置、密钥、接口还是宿主进程出网；
-- `cordis.patch.yml` — 插入 `dsh-voice-chat` 行 + 配置示例；
-- `settings.local.json` — 设置面板保存的覆盖配置（运行时生成，不进 git）；v0.4+ 结构为 `asr.<引擎>` / `tts.<引擎>` 分槽保存。
+## Локальный (офлайн) движок
 
+Движок `local` поднимает локальный HTTP-сервер на `127.0.0.1:8765` с faster-whisper (ASR) и Piper (TTS) и не требует ни ключей, ни интернета после установки моделей.
+
+- **Данные**: `~/.local/share/dsh-voice-chat/` — portable Python, venv и модели (Piper `ru_RU-irina-medium`, faster-whisper `small`);
+- **Маршруты хоста**: `GET /dsh-voice-chat/local/status`, `POST /dsh-voice-chat/local/install`, `POST /dsh-voice-chat/local/start`, `POST /dsh-voice-chat/local/stop`;
+- **Модели**: faster-whisper `tiny | base | small | medium | large-v3`; Piper — `ru_RU-irina-medium`, `ru_RU-ruslan-medium`, `ru_RU-dmitri-medium`, `ru_RU-denis-medium`;
+- Первая установка занимает несколько минут (скачивание Python, pip-пакетов и моделей).
+
+## Структура
+
+- `lib/index.js` — хост-часть: маршруты `/stt` (ASR, двойной протокол OpenAI multipart и MiMo chat/completions), `/tts` (Edge/MiMo/пользовательский/local), `/speak` (пересказ + синтез), `/settings`, `/local/*`;
+- `lib/client.js` — браузерная часть: кнопки 🎤/🔊, детектирование тишины, распознавание в браузере, одноканальное воспроизведение, «Постоянный диалог» с перебиванием, горячие клавиши (Ctrl+Shift+Space), конвертация записи в WAV, а также форма настроек в диалоге DSH;
+- `lib/edge-tts.js` — встроенный клиент протокола edge-tts (бесплатная служба Microsoft Edge);
+- `lib/local-engine.js` — менеджер офлайн-движка: portable Python, venv, модели, запуск/остановка `py/server.py`;
+- `py/server.py` — Python-шимм OpenAI-совместимого API поверх faster-whisper и Piper (только стандартная библиотека);
+- `py/download_models.py` — предзагрузка моделей (Piper + faster-whisper);
+- `test/` — тесты: `settings`, `client-settings`, `host-smoke` (маршруты хоста), `index-unit` (юнит-тесты хоста), `local-engine` (менеджер офлайн-движка и `py/server.py`), `live-dialog` (постоянный диалог); запуск — `npm test`;
+- `test/diagnose-tts.mjs` — однокомандная диагностика цепочки озвучивания (`npm run diagnose:tts`): реальный синтез по каждому движку и прямые вызовы `/tts`, `/speak`;
+- `cordis.patch.yml` — вставка строки `dsh-voice-chat` + примеры конфигурации;
+- `settings.local.json` — переопределения из панели настроек (генерируется в рантайме, не в git); структура v0.4+ — слоты `asr.<движок>` / `tts.<движок>`.
+
+## Лицензия
+
+MIT — см. [LICENSE](LICENSE). Оригинальный проект: [maoyuching/dsh-voice-chat](https://github.com/maoyuching/dsh-voice-chat) (MIT, © 2026 maoyuching).
