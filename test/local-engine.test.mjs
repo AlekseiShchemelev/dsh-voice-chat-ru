@@ -68,11 +68,14 @@ async function freshDataDir(name) {
  * после чего либо проксирует вызов в настоящий python3, либо падает.
  * Ни сети, ни моделей.
  */
-async function fakePython(dir, { name = "python3", mode = "proxy", logName = "calls.log" } = {}) {
+async function fakePython(dir, { name = "python3", mode = "proxy", logName = "calls.log", delayMs = 0 } = {}) {
 	await mkdir(dir, { recursive: true });
 	const log = path.join(dir, logName);
 	const bin = path.join(dir, name);
 	const lines = [
+		// Задержка нужна тестам прогресса: без неё короткая фаза (python/venv)
+		// проходит быстрее, чем успевает опрос статуса
+		delayMs ? `sleep ${(delayMs / 1000).toFixed(3)}` : "",
 		"#!/bin/sh",
 		`printf '%s :: %s\\n' "$DSH_VOICE_DATA_DIR" "$*" >> '${log}'`,
 		'if [ "$1" = "--version" ]; then exit 0; fi',
@@ -86,7 +89,8 @@ async function fakePython(dir, { name = "python3", mode = "proxy", logName = "ca
 
 /** Ставит venv-заглушку в правильную кроссплатформенную раскладку. */
 async function fakeVenv(dataDir, opts = {}) {
-	return fakePython(path.join(dataDir, "venv", "bin"), { name: "python3", ...opts });
+	// delayMs по умолчанию: заглушка спит, чтобы фазы установки было видно в статусе
+	return fakePython(path.join(dataDir, "venv", "bin"), { name: "python3", delayMs: 250, ...opts });
 }
 
 /**
@@ -470,23 +474,35 @@ await test("ensureModels без интерпретатора venv — понят
 
 console.log("\ninstall(): single-flight, прогресс и автозапуск");
 
-await test("install(): идёт по трём фазам и ставит installing/installStage в status()", async () => {
+await test("install(): идёт по трём фазам, стадия видна в статусе и в журнале", async () => {
 	const dataDir = await freshDataDir("install-progress");
-	const venv = await fakeVenv(dataDir);
+	// Модели качаются дольше всего — эту фазу видно в статусе без гонок;
+	// короткие фазы (python/venv) проверяем по журналу установки
+	const venv = await fakeVenv(dataDir, { delayMs: 250 });
 	await makeModels(dataDir);
 	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
 		const manager = createLocalEngineManager();
 		const done = manager.install();
-		// Первая фаза (ensurePython) успевает отработать синхронно по логу заглушки
-		await new Promise((r) => setTimeout(r, 50));
-		const midway = await manager.status();
-		assert.equal(midway.installing, true, "installing должен быть true, пока установка идёт");
-		assert.ok(["python", "venv", "models"].includes(midway.installStage), "installStage: " + midway.installStage);
+		let sawInstalling = false;
+		let sawModels = false;
+		for (let i = 0; i < 40 && !sawModels; i++) {
+			const st = await manager.status();
+			if (st.installing) sawInstalling = true;
+			if (st.installStage === "models") sawModels = true;
+			if (!sawModels) await new Promise((r) => setTimeout(r, 30));
+		}
+		assert.ok(sawInstalling, "installing должен быть true, пока установка идёт");
+		assert.ok(sawModels, "стадия models должна быть видна в status()");
 		await done;
 		const after = await manager.status();
 		assert.equal(after.installing, false);
 		assert.equal(after.installStage, null);
 		assert.equal(after.installError, null);
+		// Журнал содержит все три этапа в порядке выполнения
+		const log = after.logTail;
+		const order = ["python", "venv", "models"].map((st) => log.indexOf(`этап установки: ${st}`));
+		assert.ok(order.every((i) => i >= 0), "в журнале должны быть все этапы:\n" + log);
+		assert.ok(order[0] < order[1] && order[1] < order[2], "этапы идут по порядку:\n" + log);
 		assert.ok((await venv.readLog()).includes("--version"));
 	});
 });

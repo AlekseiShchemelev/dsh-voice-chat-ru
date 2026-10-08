@@ -6,8 +6,14 @@
  */
 import assert from "node:assert/strict";
 import http from "node:http";
+import { readFileSync } from "node:fs";
 import {
+	ASR_ENGINE_DEFAULTS,
 	DEFAULT_HOTKEY,
+	DEFAULT_LOCAL_PORT,
+	LOCAL_ASR_MODELS,
+	TTS_ENGINE_DEFAULTS,
+	LOCAL_TTS_VOICES,
 	buildPublicSlots,
 	cleanForTts,
 	detectAudioMime,
@@ -822,6 +828,36 @@ test("sanitizeSettings: asrHotkey нормализуется, мусор → з�
 	assert.equal(sanitizeSettings({ asrHotkey: "off" }).asrHotkey, "");
 	assert.equal(sanitizeSettings({ asrHotkey: "Ctrl+A+B" }).asrHotkey, DEFAULT_HOTKEY);
 	assert.equal(sanitizeSettings({}).asrHotkey, undefined, "непереданный ключ не добавляется");
+});
+
+// ---------- Списки значений локального движка ----------
+
+console.log("\nЛокальный движок: списки моделей и порт по умолчанию");
+
+test("списки совпадают с тем, что принимает py/server.py", () => {
+	// Держим вручную с py/server.py: SUPPORTED_WHISPER_MODELS / SUPPORTED_PIPER_VOICES
+	assert.deepEqual(LOCAL_ASR_MODELS, ["tiny", "base", "small", "medium", "large-v3"]);
+	assert.deepEqual(LOCAL_TTS_VOICES, [
+		"ru_RU-irina-medium", "ru_RU-ruslan-medium", "ru_RU-dmitri-medium", "ru_RU-denis-medium"
+	]);
+	const server = readFileSync(new URL("../py/server.py", import.meta.url), "utf8");
+	for (const model of LOCAL_ASR_MODELS) {
+		assert.ok(server.includes(`"${model}"`), `в server.py нет модели ${model}`);
+	}
+	for (const voice of LOCAL_TTS_VOICES) {
+		assert.ok(server.includes(`"${voice}"`), `в server.py нет голоса ${voice}`);
+	}
+});
+
+test("порт по умолчанию — 8765, и адрес движка на него смотрит", () => {
+	assert.equal(DEFAULT_LOCAL_PORT, 8765);
+	assert.equal(ASR_ENGINE_DEFAULTS.local.baseUrl, `http://127.0.0.1:${DEFAULT_LOCAL_PORT}/v1`);
+	assert.equal(TTS_ENGINE_DEFAULTS.local.baseUrl, `http://127.0.0.1:${DEFAULT_LOCAL_PORT}/v1`);
+	// Пустой слот (пользователь не трогал адрес) → берётся адрес движка по умолчанию
+	assert.equal(resolveAsrConfig({}, { asrEngine: "local" }).baseUrl, `http://127.0.0.1:${DEFAULT_LOCAL_PORT}/v1`);
+	assert.equal(resolveTtsConfig({}, { ttsEngine: "local" }, "local").baseUrl, `http://127.0.0.1:${DEFAULT_LOCAL_PORT}/v1`);
+	// Нестандартный порт из слота — и адрес, и порт запускаемого сервера
+	assert.equal(localPort({}, "http://127.0.0.1:9321/v1"), 9321);
 });
 
 console.log(`\n${passed} пройдено${process.exitCode ? " (есть падения)" : ""}`);

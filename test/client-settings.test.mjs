@@ -133,6 +133,27 @@ function controlByLabel(tree, labelText) {
 	assert.ok(found, `Поле не найдено: «${labelText}»`);
 	return found;
 }
+/** Input внутри контрола (у порта контрол — обёртка с input и кнопкой). */
+function inputOf(control) {
+	let input = null;
+	walk(control, (node) => { if (!input && node.type === "input") input = node; });
+	assert.ok(input, "в контроле должен быть input");
+	return input;
+}
+/** Поля с таким названием быть не должно (движок, которому оно не нужно). */
+function assertNoField(tree, labelText) {
+	const found = (() => {
+		let hit = null;
+		walk(tree, (node) => {
+			if (hit || node.type !== "div") return;
+			const kids = node.children || [];
+			const label = kids[0];
+			if (label && label.type === "label" && textOf(label) === labelText) hit = true;
+		});
+		return hit;
+	})();
+	assert.equal(found, null, `поле «${labelText}» должно быть скрыто`);
+}
 /** 找到某个 select/input 的 onChange 回调。 */
 function onChangeOf(tree, labelText) {
 	const control = controlByLabel(tree, labelText);
@@ -364,9 +385,120 @@ await test("При движке local в форме есть блок управ
 	walk(tree, (node) => { if (!box && typeof node.type === "function") box = node; });
 	assert.ok(box, "Должен появиться блок локального движка");
 	assert.match(box.type.name, /LocalEngineBox/);
-	// Ключ ASR для local не нужен — поле заблокировано
-	assert.equal(controlByLabel(tree, "API-ключ ASR").props.disabled, true);
-	assert.equal(controlByLabel(tree, "API-ключ ASR").props.placeholder, "не требуется");
+	// Адрес и ключ для local не настраиваются вовсе
+	assertNoField(tree, "ASR Base URL");
+	assertNoField(tree, "API-ключ ASR");
+	assert.ok(controlByLabel(tree, "Модель распознавания (faster-whisper)"), "модель выбирается списком");
+	assert.ok(controlByLabel(tree, "Порт локального сервера"), "порт выбирается один на оба движка");
+});
+
+await test("При движке browser поля адреса/модели/ключа скрыты", () => {
+	onChangeOf(tree, "Движок ASR")({ target: { value: "browser" } });
+	tree = renderOnce(Section, stub);
+	assertNoField(tree, "ASR Base URL");
+	assertNoField(tree, "Модель ASR");
+	assertNoField(tree, "API-ключ ASR");
+	assertNoField(tree, "Модель распознавания (faster-whisper)");
+	assert.match(textOf(tree), /Web Speech API/, "должна быть поясняющая записка");
+	// У сетевых движков поля на месте
+	onChangeOf(tree, "Движок ASR")({ target: { value: "custom" } });
+	tree = renderOnce(Section, stub);
+	assert.ok(controlByLabel(tree, "ASR Base URL"));
+	assert.ok(controlByLabel(tree, "API-ключ ASR"));
+});
+
+await test("Движок local: модель и порт — списки с разумными значениями по умолчанию", () => {
+	onChangeOf(tree, "Движок ASR")({ target: { value: "local" } });
+	tree = renderOnce(Section, stub);
+	const model = controlByLabel(tree, "Модель распознавания (faster-whisper)");
+	assert.equal(model.props.value, "small", "по умолчанию small");
+	const options = model.children.map((o) => o.props.value);
+	assert.deepEqual(options, ["tiny", "base", "small", "medium", "large-v3"],
+		"список должен совпадать с SUPPORTED_WHISPER_MODELS на сервере");
+	model.props.onChange({ target: { value: "base" } });
+	tree = renderOnce(Section, stub);
+	assert.equal(controlByLabel(tree, "Модель распознавания (faster-whisper)").props.value, "base");
+	const port = inputOf(controlByLabel(tree, "Порт локального сервера"));
+	assert.equal(port.props.value, "8765", "порт по умолчанию 8765");
+});
+
+await test("Движок local (TTS): голос Piper — список, лишних полей нет", () => {
+	onChangeOf(tree, "Движок TTS")({ target: { value: "local" } });
+	tree = renderOnce(Section, stub);
+	const voice = controlByLabel(tree, "Голос (локальный Piper)");
+	assert.equal(voice.props.value, "ru_RU-irina-medium");
+	assert.deepEqual(voice.children.map((o) => o.props.value), [
+		"ru_RU-irina-medium", "ru_RU-ruslan-medium", "ru_RU-dmitri-medium", "ru_RU-denis-medium"
+	]);
+	voice.props.onChange({ target: { value: "ru_RU-denis-medium" } });
+	tree = renderOnce(Section, stub);
+	assert.equal(controlByLabel(tree, "Голос (локальный Piper)").props.value, "ru_RU-denis-medium");
+});
+
+await test("Движок browser (TTS): настраивать нечего", () => {
+	onChangeOf(tree, "Движок TTS")({ target: { value: "browser" } });
+	tree = renderOnce(Section, stub);
+	assertNoField(tree, "TTS Base URL");
+	assertNoField(tree, "Голос (локальный Piper)");
+	assert.match(textOf(tree), /speechSynthesis/, "пояснение, что всё делает браузер");
+});
+
+await test("local: адрес выводится из порта и одинаков для ASR и TTS", async () => {
+	onChangeOf(tree, "Движок ASR")({ target: { value: "local" } });
+	onChangeOf(tree, "Движок TTS")({ target: { value: "local" } });
+	tree = renderOnce(Section, stub);
+	const port = inputOf(controlByLabel(tree, "Порт локального сервера"));
+	port.props.onChange({ target: { value: "9000" } });
+	tree = renderOnce(Section, stub);
+	assert.equal(inputOf(controlByLabel(tree, "Порт локального сервера")).props.value, "9000");
+	posts.length = 0;
+	let saveBtn = null;
+	walk(tree, (node) => { if (!saveBtn && node.type === "button" && textOf(node).includes("Сохранить")) saveBtn = node; });
+	saveBtn.props.onClick();
+	await flush();
+	const body = posts[0].body;
+	assert.equal(body.asr.local.baseUrl, "http://127.0.0.1:9000/v1");
+	assert.equal(body.tts.local.baseUrl, "http://127.0.0.1:9000/v1",
+		"сервер один: у ASR и TTS должен быть одинаковый адрес");
+	assert.equal(body.asr.local.apiKey, "", "ключ не отправляется");
+	assert.equal(body.tts.local.apiKey, "");
+});
+
+await test("local: дефолтный порт не пишется в настройки (работает встроенный адрес)", async () => {
+	onChangeOf(tree, "Движок ASR")({ target: { value: "local" } });
+	tree = renderOnce(Section, stub);
+	// Возвращаем порт по умолчанию (предыдущий тест выставил 9000)
+	const portInput = inputOf(controlByLabel(tree, "Порт локального сервера"));
+	const portControl = controlByLabel(tree, "Порт локального сервера");
+	const resetBtn = portControl.children.find((c) => c && c.type === "button" && /8765/.test(textOf(c)));
+	assert.ok(resetBtn, "рядом с портом должна быть кнопка возврата к 8765");
+	resetBtn.props.onClick();
+	tree = renderOnce(Section, stub);
+	assert.equal(portInput && inputOf(controlByLabel(tree, "Порт локального сервера")).props.value, "8765");
+	posts.length = 0;
+	let saveBtn = null;
+	walk(tree, (node) => { if (!saveBtn && node.type === "button" && textOf(node).includes("Сохранить")) saveBtn = node; });
+	saveBtn.props.onClick();
+	await flush();
+	assert.equal(posts[0].body.asr.local.baseUrl, "",
+		"для дефолтного порта слот остаётся пустым → берётся значение движка по умолчанию");
+});
+
+await test("Порт, сохранённый раньше в адресе слота, подхватывается в форме", async () => {
+	const stubP = createReactStub();
+	const SectionP = await loadSettingsSection(stubP, () => Promise.resolve({
+		ok: true, status: 200,
+		json: () => Promise.resolve({
+			...HOST_SETTINGS, asrEngine: "local",
+			asrConfig: { ...HOST_SETTINGS.asrConfig, local: { baseUrl: "http://127.0.0.1:9321/v1", model: "base", apiKey: "" } }
+		})
+	}));
+	let t = renderOnce(SectionP, stubP);
+	await flush();
+	t = renderOnce(SectionP, stubP);
+	t = renderOnce(SectionP, stubP);
+	assert.equal(inputOf(controlByLabel(t, "Порт локального сервера")).props.value, "9321");
+	assert.equal(controlByLabel(t, "Модель распознавания (faster-whisper)").props.value, "base");
 });
 
 /** Рендерит блок локального движка с заданным статусом хоста. */
