@@ -477,6 +477,35 @@ await test("Ошибка установки показывается польз�
 	assert.match(textOf(box), /Ошибка установки: Модели не загружены/);
 });
 
+await test("Показывается различие «venv есть» и «пакеты импортируются»", async () => {
+	const box = await renderLocalBox({
+		...LOCAL_READY, depsReady: false, depsError: "No module named 'faster_whisper'"
+	}, []);
+	const text = textOf(box);
+	assert.match(text, /venv есть, но faster-whisper \/ piper-tts не импортируются/);
+	assert.match(text, /No module named 'faster_whisper'/, "причина импорта должна быть видна");
+	// venv нет — строка про импорты не показывается
+	const noVenv = await renderLocalBox({ ...LOCAL_READY, venvReady: false, depsReady: null }, []);
+	assert.match(textOf(noVenv), /venv не создан/);
+	// пакеты на месте — отдельная строка
+	const ok = await renderLocalBox({ ...LOCAL_READY, depsReady: true }, []);
+	assert.match(textOf(ok), /импортируются/);
+});
+
+await test("Причина сбоя и хвост лога установки показываются пользователю", async () => {
+	const box = await renderLocalBox({
+		...LOCAL_READY,
+		venvReady: false, modelsReady: false, depsReady: false,
+		installError: "Модели не загружены: нет Piper-голоса ... — urllib.error.URLError: <urlopen error timed out>",
+		logFile: "C:\\Users\\sheme\\.local\\share\\dsh-voice-chat\\logs\\install.log",
+		logTail: "Downloading https://huggingface.co/rhasspy/piper-voices/...\nurlopen error timed out"
+	}, []);
+	const text = textOf(box);
+	assert.match(text, /urlopen error timed out/, "причина должна быть в тексте ошибки");
+	assert.match(text, /Лог установки: .*install\.log/, "показываем путь к логу");
+	assert.match(text, /urlopen error timed out/, "хвост лога тоже на экране");
+});
+
 await test("Запущенный сервер: кнопка остановки активна", async () => {
 	const posts = [];
 	const box = await renderLocalBox({

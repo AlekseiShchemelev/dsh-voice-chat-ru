@@ -297,10 +297,13 @@ await test("status(): готовый venv находится, модели — �
 		assert.equal(st.venvReady, true);
 		assert.equal(st.venvPythonPath, venv.bin);
 		assert.equal(st.modelsReady, false, "моделей на диске нет");
+		assert.equal(st.depsReady, false, "в пустом venv ни faster_whisper, ни piper не импортируются");
 		const log = await venv.readLog();
 		assert.match(log, /--version/);
-		assert.ok(!/ -c /.test(log) && !log.includes("faster_whisper"),
-			"status() не должен импортировать тяжёлые модели в Node-процессе:\n" + log);
+		// Модели в Node-процесс не грузим: проверяются только файлы на диске и импорт
+		// модулей в дочернем Python-процессе (WhisperModel/PiperVoice — никогда)
+		assert.ok(!log.includes("WhisperModel(") && !log.includes("PiperVoice.load"),
+			"status() не должен грузить модели:\n" + log);
 	});
 });
 
@@ -592,6 +595,38 @@ await testNeeds(
 		}
 	}
 );
+
+await test("ensureModels: причина сбоя попадает в текст ошибки (а не теряется)", async () => {
+	const dataDir = await freshDataDir("models-error-reason");
+	// venv-заглушка, которая падает на download_models.py: причина — в её stderr
+	await fakeVenv(dataDir, { mode: "fail" });
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
+		const manager = createLocalEngineManager();
+		await assert.rejects(
+			() => manager.ensureModels(),
+			(err) => {
+				assert.match(err.message, /Модели не загружены/);
+				// Именно это пользователь и не видел раньше: «нет Piper-голоса» без причины
+				assert.ok(/stub failure|завершился с кодом/.test(err.message), "нет причины сбоя: " + err.message);
+				assert.ok(typeof err.logTail === "string" && err.logTail.length > 0, "лог должен быть приложен");
+				return true;
+			}
+		);
+		const st = await manager.status();
+		assert.equal(typeof st.logTail, "string");
+		assert.ok(st.logTail.length > 0, "хвост лога должен быть в status()");
+		assert.match(st.logFile, /logs[\\/]install\.log$/);
+	});
+});
+
+await test("status(): depsReady=null, когда venv ещё нет", async () => {
+	const dataDir = await freshDataDir("status-no-venv");
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, ...withoutEnv().env } }, async () => {
+		const st = await createLocalEngineManager().status();
+		assert.equal(st.venvReady, false);
+		assert.equal(st.depsReady, null, "проверять нечего — не запускаем импорт");
+	});
+});
 
 await test("probe(): свободный порт → false, без исключений", async () => {
 	const port = await freePort();
