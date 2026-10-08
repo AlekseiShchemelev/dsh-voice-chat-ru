@@ -7,13 +7,17 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import {
+	DEFAULT_HOTKEY,
 	buildPublicSlots,
 	cleanForTts,
 	detectAudioMime,
+	hotkeyFromEvent,
+	hotkeyLabel,
 	isLocalEngine,
 	localPort,
 	migrateLegacySettings,
 	mergeSettings,
+	normalizeHotkey,
 	parseChatContent,
 	parseTranscriptionText,
 	resolveAsrConfig,
@@ -770,6 +774,54 @@ await testAsync("synthesizeWithCustomTts: custom без apiKey всё ещё 400
 		() => synthesizeWithCustomTts("привет", { engine: "custom", baseUrl: "http://127.0.0.1:1/v1", model: "tts-1", apiKey: "" }),
 		(err) => err.status === 400
 	);
+});
+
+// ---------- Горячая клавиша запуска распознавания ----------
+
+console.log("\nГорячая клавиша (по умолчанию правый Ctrl)");
+
+test("по умолчанию — правый Ctrl", () => {
+	assert.equal(DEFAULT_HOTKEY, "ControlRight");
+});
+
+test("normalizeHotkey: одиночный модификатор принимается как есть", () => {
+	assert.equal(normalizeHotkey("ControlRight"), "ControlRight");
+	assert.equal(normalizeHotkey("controlright"), "ControlRight");
+	assert.equal(normalizeHotkey("ShiftLeft"), "ShiftLeft");
+});
+
+test("normalizeHotkey: порядок модификаторов фиксирован", () => {
+	assert.equal(normalizeHotkey("Shift+Ctrl+m"), "Ctrl+Shift+M");
+	assert.equal(normalizeHotkey("Meta+Alt+Ctrl+k"), "Ctrl+Alt+Meta+K");
+	assert.equal(normalizeHotkey("ctrl + space"), "Ctrl+Space");
+});
+
+test("normalizeHotkey: выключение и мусор", () => {
+	assert.equal(normalizeHotkey(""), "");
+	assert.equal(normalizeHotkey("none"), "");
+	assert.equal(normalizeHotkey("off"), "");
+	assert.equal(normalizeHotkey("Ctrl+A+B"), null, "две обычные клавиши — не сочетание");
+	assert.equal(normalizeHotkey("Shift+Ctrl"), null, "без основной клавиши нельзя");
+});
+
+test("hotkeyFromEvent: событие → каноническая строка", () => {
+	assert.equal(hotkeyFromEvent({ code: "ControlRight", ctrlKey: true, key: "Control" }), "ControlRight");
+	assert.equal(hotkeyFromEvent({ code: "KeyM", ctrlKey: true, shiftKey: true, key: "M" }), "Ctrl+Shift+M");
+	assert.equal(hotkeyFromEvent({ code: "Digit1", key: "1" }), "1");
+	assert.equal(hotkeyFromEvent({ code: "Space", key: " " }), "Space");
+});
+
+test("hotkeyLabel: правый Ctrl читается по-русски", () => {
+	assert.equal(hotkeyLabel("ControlRight"), "Правый Ctrl");
+	assert.equal(hotkeyLabel("Ctrl+Shift+Space"), "Ctrl + Shift + Пробел");
+	assert.equal(hotkeyLabel(""), "");
+});
+
+test("sanitizeSettings: asrHotkey нормализуется, мусор → значение по умолчанию", () => {
+	assert.equal(sanitizeSettings({ asrHotkey: "shift+ctrl+m" }).asrHotkey, "Ctrl+Shift+M");
+	assert.equal(sanitizeSettings({ asrHotkey: "off" }).asrHotkey, "");
+	assert.equal(sanitizeSettings({ asrHotkey: "Ctrl+A+B" }).asrHotkey, DEFAULT_HOTKEY);
+	assert.equal(sanitizeSettings({}).asrHotkey, undefined, "непереданный ключ не добавляется");
 });
 
 console.log(`\n${passed} пройдено${process.exitCode ? " (есть падения)" : ""}`);

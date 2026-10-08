@@ -501,4 +501,104 @@ await test("Голос локального Piper выбирается из сп
 	assert.equal(controlByLabel(tree, "Голос (локальный Piper)").props.value, "ru_RU-denis-medium");
 });
 
+console.log("\nКлавиша запуска распознавания");
+const HOST_WITH_HOTKEY = { ...HOST_SETTINGS, asrHotkey: "Ctrl+Shift+M" };
+/** Поле клавиши — input внутри блока (там же кнопки сброса). */
+const hotkeyField = (t) => {
+	const control = controlByLabel(t, "Клавиша запуска распознавания");
+	let input = null;
+	walk(control, (node) => { if (!input && node.type === "input") input = node; });
+	assert.ok(input, "в поле клавиши должен быть input");
+	return input;
+};
+const hotkeyKey = (t, init) => hotkeyField(t).props.onKeyDown({
+	key: "", code: "", ctrlKey: false, altKey: false, shiftKey: false, metaKey: false,
+	preventDefault() { }, stopPropagation() { }, ...init
+});
+
+await test("Поле показывает текущую клавишу из настроек хоста", async () => {
+	const stubH = createReactStub();
+	const SectionH = await loadSettingsSection(stubH, () => Promise.resolve({
+		ok: true, status: 200, json: () => Promise.resolve(HOST_WITH_HOTKEY)
+	}));
+	let t = renderOnce(SectionH, stubH);
+	await flush();
+	t = renderOnce(SectionH, stubH);
+	t = renderOnce(SectionH, stubH);
+	assert.equal(hotkeyField(t).props.value, "Ctrl + Shift + M");
+	assert.equal(hotkeyField(t).props.readOnly, true, "поле не должно ловить обычный ввод текста");
+});
+
+await test("Хост без поля asrHotkey → значение по умолчанию «Правый Ctrl»", async () => {
+	const stubD = createReactStub();
+	const SectionD = await loadSettingsSection(stubD, () => Promise.resolve({
+		ok: true, status: 200, json: () => Promise.resolve(HOST_SETTINGS)
+	}));
+	let t = renderOnce(SectionD, stubD);
+	await flush();
+	t = renderOnce(SectionD, stubD);
+	t = renderOnce(SectionD, stubD);
+	assert.equal(hotkeyField(t).props.value, "Правый Ctrl");
+});
+
+await test("Нажатие клавиши в поле запоминает сочетание", async () => {
+	const stubH = createReactStub();
+	const SectionH = await loadSettingsSection(stubH, () => Promise.resolve({
+		ok: true, status: 200, json: () => Promise.resolve(HOST_SETTINGS)
+	}));
+	let t = renderOnce(SectionH, stubH);
+	await flush();
+	t = renderOnce(SectionH, stubH);
+	t = renderOnce(SectionH, stubH);
+	hotkeyKey(t, { key: "Control", code: "ControlRight", ctrlKey: true });
+	t = renderOnce(SectionH, stubH);
+	assert.equal(hotkeyField(t).props.value, "Правый Ctrl", "одиночный модификатор принимается");
+	hotkeyKey(t, { key: "M", code: "KeyM", ctrlKey: true, altKey: true });
+	t = renderOnce(SectionH, stubH);
+	assert.equal(hotkeyField(t).props.value, "Ctrl + Alt + M");
+});
+
+await test("Esc возвращает «Правый Ctrl», Delete выключает клавишу", async () => {
+	const stubH = createReactStub();
+	const SectionH = await loadSettingsSection(stubH, () => Promise.resolve({
+		ok: true, status: 200, json: () => Promise.resolve(HOST_SETTINGS)
+	}));
+	let t = renderOnce(SectionH, stubH);
+	await flush();
+	t = renderOnce(SectionH, stubH);
+	t = renderOnce(SectionH, stubH);
+	hotkeyKey(t, { key: "Escape", code: "Escape" });
+	t = renderOnce(SectionH, stubH);
+	assert.equal(hotkeyField(t).props.value, "Правый Ctrl");
+	hotkeyKey(t, { key: "Delete", code: "Delete" });
+	t = renderOnce(SectionH, stubH);
+	assert.equal(hotkeyField(t).props.value, "не задана", "пустое значение = горячая клавиша выключена");
+});
+
+await test("Кнопки «Правый Ctrl» и «Выключить» меняют поле", async () => {
+	const btns = [];
+	walk(tree, (node) => { if (node.type === "button" && /Правый Ctrl|Выключить/.test(textOf(node))) btns.push(node); });
+	assert.equal(btns.length, 2, "должны быть обе кнопки: " + btns.map(textOf).join(" | "));
+	btns.find((b) => /Выключить/.test(textOf(b))).props.onClick();
+	tree = renderOnce(Section, stub);
+	assert.equal(hotkeyField(tree).props.value, "не задана");
+	btns.find((b) => /Правый Ctrl/.test(textOf(b))).props.onClick();
+	tree = renderOnce(Section, stub);
+	assert.equal(hotkeyField(tree).props.value, "Правый Ctrl");
+});
+
+await test("Сохраняется выбранное сочетание", async () => {
+	posts.length = 0;
+	hotkeyKey(tree, { key: "M", code: "KeyM", ctrlKey: true, shiftKey: true });
+	tree = renderOnce(Section, stub);
+	let saveBtn = null;
+	walk(tree, (node) => { if (!saveBtn && node.type === "button" && textOf(node).includes("Сохранить")) saveBtn = node; });
+	saveBtn.props.onClick();
+	await flush();
+	assert.equal(posts[0].body.asrHotkey, "Ctrl+Shift+M");
+	// возвращаем дефолт, чтобы не ломать следующие тесты
+	hotkeyKey(tree, { key: "Escape", code: "Escape" });
+	tree = renderOnce(Section, stub);
+});
+
 console.log(`\n${passed} пройдено${process.exitCode ? " (есть падения)" : ""}`);

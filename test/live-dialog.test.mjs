@@ -154,10 +154,14 @@ function createWorld(opts = {}) {
 		rewrite: false,
 		ttsEngine: "edge",
 		ratePercent: 110,
-		speechLang: "ru-RU"
+		speechLang: "ru-RU",
+		// "" = горячая клавиша выключена; по умолчанию — правый Ctrl
+		asrHotkey: opts.hotkey === undefined ? "ControlRight" : opts.hotkey
 	};
 
 	const clock = createClock();
+	// Подписчики window-событий (нужны для проверки горячих клавиш)
+	const listeners = {};
 	const speech = {
 		utterances: [],
 		cancelCount: 0,
@@ -177,6 +181,7 @@ function createWorld(opts = {}) {
 		settings,
 		speech,
 		clock,
+		listeners,
 		amplitude: 0,          // текущая амплитуда микрофона для всех Analyser
 		gumCount: 0,
 		gumModes: opts.gumModes || "ok",
@@ -292,8 +297,14 @@ function createWorld(opts = {}) {
 		clearTimeout: clock.clearTimeout,
 		setInterval: clock.setInterval,
 		clearInterval: clock.clearInterval,
-		addEventListener: () => {},
-		removeEventListener: () => {},
+		addEventListener: (type, fn) => {
+			(env.listeners[type] ||= []).push(fn);
+		},
+		removeEventListener: (type, fn) => {
+			const list = env.listeners[type] || [];
+			const i = list.indexOf(fn);
+			if (i >= 0) list.splice(i, 1);
+		},
 		speechSynthesis: speech,
 		AudioContext: FakeAudioContext,
 		webkitAudioContext: FakeAudioContext,
@@ -344,9 +355,9 @@ function buttonsOf(tree) {
 }
 
 // ---------- сборка мира: загрузка client.js + рендер кнопки ----------
-async function mount({ continuousMode = false, gumModes = "ok", autoSend = true } = {}) {
+async function mount({ continuousMode = false, gumModes = "ok", autoSend = true, hotkey } = {}) {
 	const stub = createReactStub();
-	const w = createWorld({ continuousMode, gumModes, autoSend });
+	const w = createWorld({ continuousMode, gumModes, autoSend, hotkey });
 	w.env.installGlobals();
 
 	let captured = null;
@@ -424,7 +435,33 @@ async function mount({ continuousMode = false, gumModes = "ok", autoSend = true 
 		get micOpens() { return w.env.gumCount; },
 		get hint() { let t = ""; walk(api.tree, (n) => { if (n.type === "span" && n.props && n.props.style && n.props.style.position === "absolute") t = textOf(n); }); return t; },
 		/** началась ли новая запись (MediaRecorder) */
-		get recorders() { return w.env.recorders; }
+		get recorders() { return w.env.recorders; },
+		/** синтетическое событие клавиатуры на window */
+		key(type, init) {
+			const ev = {
+				type, key: "", code: "", ctrlKey: false, altKey: false, shiftKey: false, metaKey: false,
+				repeat: false, defaultPrevented: false,
+				preventDefault() { this.defaultPrevented = true; },
+				...init
+			};
+			for (const fn of (w.env.listeners[type] || []).slice()) fn(ev);
+			return ev;
+		},
+		/** зажать клавишу (keydown) */
+		press(init) { return api.key("keydown", init); },
+		/** «озвучить» кусок записи: без него MediaRecorder отдаёт пустой блоб */
+		audio() {
+			const rec = w.env.recorders[w.env.recorders.length - 1];
+			assert.ok(rec && typeof rec.ondataavailable === "function", "запись должна была начаться");
+			rec.ondataavailable({ data: new Blob([new Uint8Array([1, 2, 3])], { type: "audio/webm" }) });
+		},
+		/** дождаться, пока настройки хоста доедут и компонент перерисуется */
+		async ready() {
+			for (let i = 0; i < 3; i++) { api.render(); await flush(); }
+			return api;
+		},
+		/** отпустить клавишу (keyup) */
+		release(init) { return api.key("keyup", init); }
 	};
 	return api;
 }
@@ -729,6 +766,123 @@ await test("Размонтирование во время continuousMode: та�
 	m.tick(150 * 5);
 	await m.flush();
 	assert.equal(m.micOpens, 1, "после размонтирования перебивание не срабатывает");
+});
+
+console.log("\nГорячая клавиша распознавания (push-to-talk)");
+const RIGHT_CTRL_DOWN = { key: "Control", code: "ControlRight", ctrlKey: true };
+const RIGHT_CTRL_UP = { key: "Control", code: "ControlRight", ctrlKey: false };
+
+await test("Удержание правого Ctrl: keydown → запись, keyup → распознавание и отправка", async () => {
+	const m = await mount();
+	await m.ready();
+	const before = m.micOpens;
+	m.press(RIGHT_CTRL_DOWN);
+	await m.flush();
+	m.render();
+	assert.equal(m.micOpens, before + 1, "по нажатию правого Ctrl микрофон должен открыться");
+	assert.ok(m.recorders.length > 0, "запись должна была начаться");
+	m.audio();
+	const recorders = m.recorders.length;
+	m.release(RIGHT_CTRL_UP);
+	await m.flush();
+	m.render();
+	await m.flush();
+	assert.equal(m.recorders.length, recorders, "новая запись не должна начинаться при отпускании");
+	assert.deepEqual(m.env.drafts, ["распознанный текст"], "текст должен уйти в поле ввода");
+});
+
+await test("Автоповтор клавиши (repeat) не начинает вторую запись", async () => {
+	const m = await mount();
+	await m.ready();
+	m.press(RIGHT_CTRL_DOWN);
+	await m.flush();
+	const before = m.micOpens;
+	m.press({ ...RIGHT_CTRL_DOWN, repeat: true });
+	m.press({ ...RIGHT_CTRL_DOWN, repeat: true });
+	await m.flush();
+	m.render();
+	assert.equal(m.micOpens, before, "удержание клавиши не должно переоткрывать микрофон");
+	m.release(RIGHT_CTRL_UP);
+	await m.flush();
+});
+
+await test("Левый Ctrl и обычные клавиши не запускают запись", async () => {
+	const m = await mount();
+	await m.ready();
+	const before = m.micOpens;
+	m.press({ key: "Control", code: "ControlLeft", ctrlKey: true });
+	m.press({ key: "c", code: "KeyC", ctrlKey: true });
+	m.press({ key: "Shift", code: "ShiftLeft", shiftKey: true });
+	m.press({ key: "a", code: "KeyA" });
+	await m.flush();
+	m.render();
+	assert.equal(m.micOpens, before, "набор текста и Ctrl+C не должны запускать микрофон");
+});
+
+await test("Пустая настройка отключает горячую клавишу", async () => {
+	const m = await mount({ hotkey: "" });
+	await m.ready();
+	const before = m.micOpens;
+	m.press(RIGHT_CTRL_DOWN);
+	await m.flush();
+	m.render();
+	assert.equal(m.micOpens, before, "при asrHotkey=\"\" ничего не должно стартовать");
+});
+
+await test("Другое сочетание из настроек работает (Ctrl+Shift+M)", async () => {
+	const m = await mount({ hotkey: "Ctrl+Shift+M" });
+	await m.ready();
+	const rightCtrl = m.press(RIGHT_CTRL_DOWN);
+	assert.equal(rightCtrl.defaultPrevented, false, "правый Ctrl больше не перехватывается");
+	const before = m.micOpens;
+	const down = m.press({ key: "M", code: "KeyM", ctrlKey: true, shiftKey: true });
+	assert.equal(down.defaultPrevented, true, "сочетание из настроек должно перехватываться");
+	await m.flush();
+	m.render();
+	assert.equal(m.micOpens, before + 1);
+	m.release({ key: "M", code: "KeyM", ctrlKey: true, shiftKey: true });
+	await m.flush();
+});
+
+await test("Уход со страницы во время записи останавливает её", async () => {
+	const m = await mount();
+	await m.ready();
+	m.press(RIGHT_CTRL_DOWN);
+	await m.flush();
+	m.render();
+	m.audio();
+	const recorders = m.recorders.length;
+	m.key("blur", {});
+	await m.flush();
+	m.render();
+	assert.equal(m.recorders.length, recorders, "blur не должен начинать новую запись");
+	assert.deepEqual(m.env.drafts, ["распознанный текст"], "запись должна была завершиться и отправиться");
+});
+
+await test("Старые жёсткие Ctrl+Shift+Space / Ctrl+M больше не перехватываются", async () => {
+	const m = await mount();
+	await m.ready();
+	const before = m.micOpens;
+	const space = m.press({ key: " ", code: "Space", ctrlKey: true, shiftKey: true });
+	const letter = m.press({ key: "m", code: "KeyM", ctrlKey: true });
+	assert.equal(space.defaultPrevented, false, "Ctrl+Shift+Space больше не захватывается");
+	assert.equal(letter.defaultPrevented, false, "Ctrl+M больше не захватывается");
+	await m.flush();
+	m.render();
+	assert.equal(m.micOpens, before);
+});
+
+await test("Подсказка кнопки микрофона показывает выбранную клавишу", async () => {
+	const m = await mount();
+	await m.ready();
+	const mic = m.buttons()[0];
+	assert.match(String(mic.props.title), /Правый Ctrl/);
+	const m2 = await mount({ hotkey: "Ctrl+Shift+M" });
+	await m2.ready();
+	assert.match(String(m2.buttons()[0].props.title), /Ctrl \+ Shift \+ M/);
+	const m3 = await mount({ hotkey: "" });
+	await m3.ready();
+	assert.doesNotMatch(String(m3.buttons()[0].props.title), /удерживайте/);
 });
 
 console.log(`\n${passed} пройдено${process.exitCode ? " (есть падения)" : ""}`);

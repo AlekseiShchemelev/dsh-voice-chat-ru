@@ -21,7 +21,7 @@ A Doubao-style voice chat plugin for the [DeepSeek Harness](https://github.com/d
 - **No duplicate playback**: which replies were already spoken is remembered per session;
 - **Mute toggle** 🔊: click while playing to mute immediately; click again to resume;
 - **Settings UI**: everything lives inside **DSH's built-in settings dialog** (gear icon → "voice chat"), applied immediately — no restart needed;
-- **Hotkeys**: `Ctrl+Shift+Space` toggles the mic (alternates `Ctrl+M` / `Ctrl+Shift+M`).
+- **Push-to-talk key**: defaults to **Right Ctrl** — **hold** to record, **release** to transcribe and send; the key/combination is configurable in the settings.
 
 ## Requirements
 
@@ -113,7 +113,7 @@ The `local` engine serves faster-whisper (ASR) and Piper (TTS) on `127.0.0.1:876
 ## Structure
 
 - `lib/index.js` — host half: `/stt` (ASR, dual protocol: OpenAI multipart + MiMo chat/completions), `/tts` (Edge/MiMo/custom/local), `/speak` (rewrite + synthesize), `/settings`, `/local/*`;
-- `lib/client.js` — browser half: mic/mute buttons, silence detection, in-browser recognition, single-channel playback, continuous dialog with barge-in, hotkeys (Ctrl+Shift+Space), WAV conversion, and the settings form injected into DSH's dialog;
+- `lib/client.js` — browser half: mic/mute buttons, silence detection, in-browser recognition, single-channel playback, continuous dialog with barge-in, configurable push-to-talk hotkey, WAV conversion, and the settings form injected into DSH's dialog;
 - `lib/edge-tts.js` — inline edge-tts protocol client (Microsoft's free read-aloud service);
 - `lib/local-engine.js` — offline engine manager: portable Python, venv, models, spawn/stop of `py/server.py`;
 - `py/server.py` — stdlib-only OpenAI-compatible shim over faster-whisper and Piper;

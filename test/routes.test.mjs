@@ -167,6 +167,25 @@ await test("/local/status отдаёт installing/installStage/installError", as
 	assert.equal(body.installing, false);
 });
 
+await test("/settings: asrHotkey сохраняется, нормализуется и отдаётся в /config", async () => {
+	// Неразобранное значение → дефолт (правый Ctrl), а не мусор в settings.local.json
+	await saveSettings({ asrHotkey: "shift+ctrl+m" });
+	let settings = await (await fetch(`${base}/dsh-voice-chat/settings`)).json();
+	assert.equal(settings.asrHotkey, "Ctrl+Shift+M");
+	let cfg = await (await fetch(`${base}/dsh-voice-chat/config`)).json();
+	assert.equal(cfg.asrHotkey, "Ctrl+Shift+M", "микрофон тоже должен знать про клавишу");
+
+	await saveSettings({ asrHotkey: "Ctrl+A+B" });
+	settings = await (await fetch(`${base}/dsh-voice-chat/settings`)).json();
+	assert.equal(settings.asrHotkey, "ControlRight", "мусор откатывается к дефолту");
+
+	await saveSettings({ asrHotkey: "" });
+	settings = await (await fetch(`${base}/dsh-voice-chat/settings`)).json();
+	assert.equal(settings.asrHotkey, "", "пустая строка = горячая клавиша выключена");
+
+	await saveSettings({ asrHotkey: "ControlRight" });
+});
+
 await test("POST /local/start понимает ?port= (а не парсит его как '=число')", async () => {
 	// Порт занят «нашим» локальным сервером → start должен вернуть alreadyRunning, не упав
 	const local = await startFakeLocalServer();
