@@ -463,6 +463,144 @@ await test("ensureModels без интерпретатора venv — понят
 	});
 });
 
+// ---------------------------------------------------------------- install / ensureStarted
+
+console.log("\ninstall(): single-flight, прогресс и автозапуск");
+
+await test("install(): идёт по трём фазам и ставит installing/installStage в status()", async () => {
+	const dataDir = await freshDataDir("install-progress");
+	const venv = await fakeVenv(dataDir);
+	await makeModels(dataDir);
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
+		const manager = createLocalEngineManager();
+		const done = manager.install();
+		// Первая фаза (ensurePython) успевает отработать синхронно по логу заглушки
+		await new Promise((r) => setTimeout(r, 50));
+		const midway = await manager.status();
+		assert.equal(midway.installing, true, "installing должен быть true, пока установка идёт");
+		assert.ok(["python", "venv", "models"].includes(midway.installStage), "installStage: " + midway.installStage);
+		await done;
+		const after = await manager.status();
+		assert.equal(after.installing, false);
+		assert.equal(after.installStage, null);
+		assert.equal(after.installError, null);
+		assert.ok((await venv.readLog()).includes("--version"));
+	});
+});
+
+await test("install(): параллельные вызовы не дублируют работу (одно обещание)", async () => {
+	const dataDir = await freshDataDir("install-single-flight");
+	await fakeVenv(dataDir);
+	await makeModels(dataDir);
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
+		const manager = createLocalEngineManager();
+		const a = manager.install();
+		const b = manager.install();
+		assert.equal(a, b, "второй вызов должен переиспользовать текущую установку");
+		await a;
+		// После завершения следующий вызов — новая попытка (а не зависшее обещание)
+		const c = manager.install();
+		assert.notEqual(c, a);
+		await c;
+	});
+});
+
+await test("install(): ошибка попадает в installError и не «залипает»", async () => {
+	const dataDir = await freshDataDir("install-error");
+	await fakeVenv(dataDir, { mode: "fail" });
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
+		const manager = createLocalEngineManager();
+		await assert.rejects(() => manager.install());
+		const st = await manager.status();
+		assert.equal(st.installing, false);
+		assert.equal(typeof st.installError, "string");
+		assert.ok(st.installError.length > 0);
+	});
+});
+
+await test("ensureStarted(): не установлен → понятная ошибка про кнопку «Установить»", async () => {
+	const dataDir = await freshDataDir("ensure-not-installed");
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, ...withoutEnv().env } }, async () => {
+		const manager = createLocalEngineManager({ port: await freePort() });
+		await assert.rejects(
+			() => manager.ensureStarted(),
+			(err) => {
+				assert.equal(err.status, 400);
+				assert.match(err.message, /Установить локальный движок/);
+				return true;
+			}
+		);
+	});
+});
+
+await testNeeds(
+	"ensureStarted(): поднимает сервер сам (выбрал движок → нажал микрофон)",
+	hasPython3, "нет python3 в системе",
+	async () => {
+		const dataDir = await freshDataDir("ensure-autostart");
+		await fakeVenv(dataDir);
+		await makeModels(dataDir);
+		const port = await freePort();
+		await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
+			const manager = createLocalEngineManager({ port, startTimeoutMs: 20_000 });
+			const result = await manager.ensureStarted();
+			PROCS.add(result.pid);
+			assert.ok(result.pid, "ensureStarted должен вернуть pid поднятого сервера");
+			const health = await fetch(`http://127.0.0.1:${port}/health`);
+			assert.equal(health.status, 200);
+			// Повторный вызов не перезапускает процесс
+			const again = await manager.ensureStarted();
+			assert.equal(again.alreadyRunning, true);
+			assert.equal(again.pid, result.pid);
+			await manager.stop();
+		});
+	}
+);
+
+await testNeeds(
+	"ensureStarted(): чужой сервер на порту не перезапускаем (уже работает)",
+	hasPython3, "нет python3 в системе",
+	async () => {
+		const dataDir = await freshDataDir("ensure-external");
+		await fakeVenv(dataDir);
+		await makeModels(dataDir);
+		const port = await freePort();
+		const proc = spawn("python3", [path.join(ROOT, "py", "server.py"), "--port", String(port)], {
+			stdio: "ignore", env: { ...process.env, DSH_VOICE_DATA_DIR: path.join(dataDir, "models") }
+		});
+		PROCS.add(proc.pid);
+		try {
+			// Ждём готовности чужого сервера
+			const deadline = Date.now() + 10_000;
+			while (Date.now() < deadline) {
+				try { if ((await fetch(`http://127.0.0.1:${port}/health`)).ok) break; } catch { /* ждём */ }
+				await new Promise((r) => setTimeout(r, 100));
+			}
+			await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
+				const manager = createLocalEngineManager({ port });
+				const result = await manager.ensureStarted();
+				assert.equal(result.alreadyRunning, true);
+				assert.equal(result.external, true);
+				assert.equal(result.pid, null, "чужой процесс мы не переименовываем в свой");
+				const st = await manager.status();
+				assert.equal(st.serverRunning, true);
+				assert.equal(st.external, true);
+			});
+		} finally {
+			proc.kill("SIGTERM");
+			await waitGone(proc.pid);
+		}
+	}
+);
+
+await test("probe(): свободный порт → false, без исключений", async () => {
+	const port = await freePort();
+	await withState({ env: { DSH_VOICE_DATA_DIR: await freshDataDir("probe") } }, async () => {
+		const manager = createLocalEngineManager({ port });
+		assert.equal(await manager.probe(port), false);
+	});
+});
+
 // ---------------------------------------------------------------- интеграция с py/server.py
 
 console.log("\nЖивой цикл: py/server.py поднимается, отвечает /health, корректно отдаёт 400");

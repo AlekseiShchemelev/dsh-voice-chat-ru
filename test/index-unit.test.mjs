@@ -10,6 +10,8 @@ import {
 	buildPublicSlots,
 	cleanForTts,
 	detectAudioMime,
+	isLocalEngine,
+	localPort,
 	migrateLegacySettings,
 	mergeSettings,
 	parseChatContent,
@@ -18,6 +20,7 @@ import {
 	resolveTtsConfig,
 	resolveTtsEngine,
 	sanitizeSettings,
+	synthesizeWithCustomTts,
 	transcribe,
 	transcribeWithChatAsr
 } from "../lib/index.js";
@@ -693,6 +696,80 @@ test("包装成完整 speak 文档（version + xmlns）", () => {
 	const xml = ssml({});
 	assert.ok(xml.startsWith("<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis'"));
 	assert.ok(xml.endsWith("</prosody></voice></speak>"));
+});
+
+// ---------- Локальный движок: ключ не нужен, порт берётся из адреса ----------
+
+test("isLocalEngine: только движок local (с нормализацией регистра/пробелов)", () => {
+	assert.equal(isLocalEngine("local"), true);
+	assert.equal(isLocalEngine(" Local "), true);
+	assert.equal(isLocalEngine("LOCAL"), true);
+	assert.equal(isLocalEngine("browser"), false);
+	assert.equal(isLocalEngine(""), false);
+	assert.equal(isLocalEngine(undefined), false);
+});
+
+test("localPort: порт из 127.0.0.1:xxxx адреса слота", () => {
+	assert.equal(localPort({}, "http://127.0.0.1:8765/v1"), 8765);
+	assert.equal(localPort({}, "http://localhost:9000/v1"), 9000);
+	// Адрес без порта → берём config.local.port, затем дефолт
+	assert.equal(localPort({}, "http://127.0.0.1/v1"), 8765);
+	assert.equal(localPort({ local: { port: 7777 } }, ""), 7777);
+});
+
+await testAsync("transcribe: движок local без apiKey → запрос уходит, Authorization не шлём", async () => {
+	let seen = null;
+	const { server, baseUrl } = await startFakeAsr((req, res, body) => {
+		seen = { url: req.url, auth: req.headers.authorization, body: body.toString("latin1") };
+		res.writeHead(200, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ text: "локальный текст" }));
+	});
+	try {
+		const text = await transcribe(Buffer.from([1, 2, 3]), {
+			engine: "local", baseUrl: `${baseUrl}/v1`, model: "small", apiKey: ""
+		});
+		assert.equal(text, "локальный текст");
+		assert.equal(seen.url, "/v1/audio/transcriptions");
+		// Локальный сервер не проверяет ключ — заголовок не должен мешать
+		assert.equal(seen.auth, undefined);
+		assert.match(seen.body, /name="model"[\s\S]*small/);
+	} finally {
+		await closeServer(server);
+	}
+});
+
+await testAsync("transcribe: engine=browser без apiKey всё ещё 400 (не наш локальный движок)", async () => {
+	await assert.rejects(
+		() => transcribe(Buffer.from([1]), { engine: "browser", baseUrl: "http://127.0.0.1:1/v1", model: "", apiKey: "" }),
+		(err) => err.status === 400
+	);
+});
+
+await testAsync("synthesizeWithCustomTts: local без apiKey → запрос уходит, ключ не требуется", async () => {
+	let seen = null;
+	const { server, baseUrl } = await startFakeAsr((req, res, body) => {
+		seen = { url: req.url, auth: req.headers.authorization, payload: JSON.parse(body.toString("utf8")) };
+		res.writeHead(200, { "Content-Type": "audio/wav" });
+		res.end(Buffer.from("RIFF0000WAVE", "latin1"));
+	});
+	try {
+		const audio = await synthesizeWithCustomTts("привет", {
+			engine: "local", baseUrl: `${baseUrl}/v1`, model: "piper", apiKey: "", voice: "ru_RU-irina-medium"
+		});
+		assert.equal(audio.length, 12);
+		assert.equal(seen.url, "/v1/audio/speech");
+		assert.equal(seen.auth, undefined);
+		assert.equal(seen.payload.voice, "ru_RU-irina-medium");
+	} finally {
+		await closeServer(server);
+	}
+});
+
+await testAsync("synthesizeWithCustomTts: custom без apiKey всё ещё 400", async () => {
+	await assert.rejects(
+		() => synthesizeWithCustomTts("привет", { engine: "custom", baseUrl: "http://127.0.0.1:1/v1", model: "tts-1", apiKey: "" }),
+		(err) => err.status === 400
+	);
 });
 
 console.log(`\n${passed} пройдено${process.exitCode ? " (есть падения)" : ""}`);

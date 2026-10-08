@@ -13,7 +13,8 @@
   "type": "module",
   "main": "lib/index.js",
   "scripts": {
-    "test": "node test/settings.test.mjs && node test/client-settings.test.mjs && node test/host-smoke.mjs && node test/index-unit.test.mjs && node test/local-engine.test.mjs && node test/live-dialog.test.mjs",
+    "test": "node test/settings.test.mjs && node test/client-settings.test.mjs && node test/host-smoke.mjs && node test/index-unit.test.mjs && node test/local-engine.test.mjs && node test/routes.test.mjs && node test/live-dialog.test.mjs",
+    "test:routes": "node test/routes.test.mjs",
     "test:settings": "node test/settings.test.mjs && node test/client-settings.test.mjs && node test/host-smoke.mjs",
     "test:unit": "node test/index-unit.test.mjs",
     "test:local": "node test/local-engine.test.mjs",

@@ -50,6 +50,9 @@ function createReactStub() {
 	return {
 		React,
 		beginRender() { cursor = 0; },
+		/** Текущая позиция курсора хуков — чтобы продолжать нумерацию после формы. */
+		hookCursor() { return cursor; },
+		resume(at) { cursor = at; },
 		runEffects() {
 			for (const entry of effects) {
 				if (!entry || !entry.pending) continue;
@@ -68,6 +71,9 @@ async function loadSettingsSection(reactStub, fetchImpl) {
 		fetch: fetchImpl,
 		setTimeout: () => 0,
 		clearTimeout: () => {},
+		// Опрос статуса локального движка: в тесте интервал — пустая функция
+		setInterval: () => 0,
+		clearInterval: () => {},
 		addEventListener: () => {},
 		removeEventListener: () => {},
 		__ModuleLoader__: { load(spec) { captured = spec; } }
@@ -348,6 +354,151 @@ await test("Старый хост даёт только плоские ключ�
 	t2 = renderOnce(Section2, stub2);
 	assert.equal(controlByLabel(t2, "TTS Base URL").props.value, "", "Плоский адрес старого хоста относится только к текущему движку (edge), не может быть принят за custom");
 	assert.equal(controlByLabel(t2, "ASR Base URL").props.value, "http://127.0.0.1:52625/v1", "Текущий движок ASR — custom, плоские ключи относятся к нему");
+});
+
+console.log("\nЛокальный движок: блок статуса и кнопки");
+await test("При движке local в форме есть блок управления локальным движком", () => {
+	onChangeOf(tree, "Движок ASR")({ target: { value: "local" } });
+	tree = renderOnce(Section, stub);
+	let box = null;
+	walk(tree, (node) => { if (!box && typeof node.type === "function") box = node; });
+	assert.ok(box, "Должен появиться блок локального движка");
+	assert.match(box.type.name, /LocalEngineBox/);
+	// Ключ ASR для local не нужен — поле заблокировано
+	assert.equal(controlByLabel(tree, "API-ключ ASR").props.disabled, true);
+	assert.equal(controlByLabel(tree, "API-ключ ASR").props.placeholder, "не требуется");
+});
+
+/** Рендерит блок локального движка с заданным статусом хоста. */
+async function renderLocalBox(statusBody, posts) {
+	const stubX = createReactStub();
+	const SectionX = await loadSettingsSection(stubX, (url, options = {}) => {
+		if (String(url).includes("/local/")) {
+			// GET /local/status отдаёт сам объект статуса, POST — { ok, status }
+			if (options.method === "POST") {
+				posts.push(String(url));
+				return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, status: statusBody }) });
+			}
+			return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(statusBody) });
+		}
+		return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(HOST_SETTINGS) });
+	});
+	let t = renderOnce(SectionX, stubX);
+	await flush();
+	t = renderOnce(SectionX, stubX);
+	onChangeOf(t, "Движок ASR")({ target: { value: "local" } });
+	t = renderOnce(SectionX, stubX);
+	let node = null;
+	walk(t, (n) => { if (!node && typeof n.type === "function") node = n; });
+	assert.ok(node, "Блок локального движка должен рендериться");
+	// Раскрываем сам компонент в том же стенде и БЕЗ сброса курсора: индексы
+	// хуков продолжаются после хуков формы (иначе useState блока перезапишет
+	// состояние формы, а его собственные слоты окажутся заняты).
+	const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+	const mark = stubX.hookCursor();
+	let box = node.type(node.props);
+	stubX.runEffects();
+	await settle();
+	stubX.resume(mark);
+	box = node.type(node.props);
+	stubX.runEffects();
+	await settle();
+	return box;
+}
+
+const LOCAL_READY = {
+	pythonReady: true, pythonPath: "python3", venvReady: true, modelsReady: true,
+	serverRunning: false, installing: false, installStage: null, installError: null,
+	port: 8765, pid: null, error: null, dataDir: "/home/u/.local/share/dsh-voice-chat"
+};
+
+const buttonByText = (tree, re) => {
+	let found = null;
+	walk(tree, (node) => { if (!found && node.type === "button" && re.test(textOf(node))) found = node; });
+	return found;
+};
+
+await test("Блок показывает состояние окружения и кнопки управления", async () => {
+	const box = await renderLocalBox(LOCAL_READY, []);
+	const text = textOf(box);
+	assert.match(text, /Python/, "Должна быть строка про Python");
+	assert.match(text, /Модели/, "Должна быть строка про модели");
+	assert.match(text, /не запущен/, "Незапущенный сервер отмечен в статусе");
+	assert.match(text, /\/dsh-voice-chat/, "Показывается каталог данных");
+	assert.ok(buttonByText(box, /Запустить сервер/), "Есть кнопка запуска сервера");
+	assert.ok(buttonByText(box, /Остановить сервер/), "Есть кнопка остановки сервера");
+	// Установленный, но не запущенный: установка не нужна, запустить — можно
+	assert.match(textOf(buttonByText(box, /Установлено|Установить локальный/)), /Установлено/);
+	assert.equal(buttonByText(box, /Установлено/).props.disabled, true);
+	assert.equal(buttonByText(box, /Запустить сервер/).props.disabled, false);
+	assert.equal(buttonByText(box, /Остановить сервер/).props.disabled, true, "Сервер не запущен — останавливать нечего");
+});
+
+await test("Кнопка «Запустить сервер» дёргает /local/start", async () => {
+	const posts = [];
+	const box = await renderLocalBox(LOCAL_READY, posts);
+	await buttonByText(box, /Запустить сервер/).props.onClick();
+	await flush();
+	assert.deepEqual(posts, ["/dsh-voice-chat/local/start"]);
+});
+
+await test("Не установленный движок: кнопка установки активна и дёргает /local/install", async () => {
+	const posts = [];
+	const box = await renderLocalBox({
+		...LOCAL_READY, venvReady: false, modelsReady: false,
+		error: "Python не найден: установите python3 или задайте DSH_VOICE_PYTHON"
+	}, posts);
+	const btn = buttonByText(box, /Установить локальный движок/);
+	assert.ok(btn, "Кнопка установки должна быть");
+	assert.equal(btn.props.disabled, false);
+	assert.match(textOf(box), /Python не найден/, "Причина отсутствия Python показывается");
+	await btn.props.onClick();
+	await flush();
+	assert.deepEqual(posts, ["/dsh-voice-chat/local/install"]);
+});
+
+await test("Идущая установка показывает фазу и блокирует кнопки", async () => {
+	const box = await renderLocalBox({
+		...LOCAL_READY, installing: true, installStage: "models", venvReady: false, modelsReady: false
+	}, []);
+	const text = textOf(box);
+	assert.match(text, /Установка/, "Показывается, что установка идёт");
+	assert.match(text, /faster-whisper/, "Показывается текущая фаза установки");
+	const installBtn = buttonByText(box, /Установка…/);
+	assert.ok(installBtn, "Кнопка должна показывать, что установка идёт");
+	assert.equal(installBtn.props.disabled, true);
+});
+
+await test("Ошибка установки показывается пользователю", async () => {
+	const box = await renderLocalBox({
+		...LOCAL_READY, venvReady: false, modelsReady: false,
+		installError: "Модели не загружены: нет Piper-голоса"
+	}, []);
+	assert.match(textOf(box), /Ошибка установки: Модели не загружены/);
+});
+
+await test("Запущенный сервер: кнопка остановки активна", async () => {
+	const posts = [];
+	const box = await renderLocalBox({
+		...LOCAL_READY, serverRunning: true, pid: 4242
+	}, posts);
+	assert.match(textOf(box), /работает на порту 8765 \(pid 4242\)/);
+	assert.equal(buttonByText(box, /Запустить сервер/).props.disabled, true);
+	const stopBtn = buttonByText(box, /Остановить сервер/);
+	assert.equal(stopBtn.props.disabled, false);
+	await stopBtn.props.onClick();
+	await flush();
+	assert.deepEqual(posts, ["/dsh-voice-chat/local/stop"]);
+});
+
+await test("Голос локального Piper выбирается из списка имён моделей", () => {
+	onChangeOf(tree, "Движок TTS")({ target: { value: "local" } });
+	tree = renderOnce(Section, stub);
+	const voice = controlByLabel(tree, "Голос (локальный Piper)");
+	assert.equal(typeof voice.props.onChange, "function");
+	voice.props.onChange({ target: { value: "ru_RU-denis-medium" } });
+	tree = renderOnce(Section, stub);
+	assert.equal(controlByLabel(tree, "Голос (локальный Piper)").props.value, "ru_RU-denis-medium");
 });
 
 console.log(`\n${passed} пройдено${process.exitCode ? " (есть падения)" : ""}`);

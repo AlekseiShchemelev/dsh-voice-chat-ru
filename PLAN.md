@@ -38,9 +38,10 @@
 ## Этап 5 — Локальный Python-движок (faster-whisper + Piper)
 1. Новые движки **`local`** в обоих списках.
 2. **`py/server.py`** (stdlib only): OpenAI-совместимый шим.
-3. **`lib/local-engine.js`**: менеджер (Python, venv, модели, spawn/kill).
-4. Routes: `GET /local/status`, `POST /local/install`, `POST /local/stop`.
-5. UI: статус + кнопки установки/запуска.
+3. **`lib/local-engine.js`**: менеджер (Python, venv, модели, spawn/kill), single-flight `install()` с фазой в `status()`, `ensureStarted()` для автозапуска.
+4. Routes: `GET /local/status`, `POST /local/install`, `POST /local/start?port=`, `POST /local/stop`.
+5. UI: блок статуса (Python / зависимости / модели / сервер) + кнопки установки/запуска/остановки; голос Piper — в общем списке.
+6. Движок `local` работает **без ключа**: `transcribe`/`synthesizeWithCustomTts` не требуют `apiKey` для `local` и не шлют `Authorization`; сервер поднимается перед первым `/stt` и `/tts`; Piper отдаёт WAV ⇒ `Content-Type: audio/wav`.
 
 ## Этап 6 — Тесты, документация, версия
 - Обновить тесты под русские label'ы и новые настройки.
