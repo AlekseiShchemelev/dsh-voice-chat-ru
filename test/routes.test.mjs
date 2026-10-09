@@ -193,6 +193,48 @@ await test("STT движка browser: отказ без жалобы на клю
 	await saveSettings({ asrEngine: "local" });
 });
 
+await test("/stt?engine= переключает движок разово, не меняя настройки", async () => {
+	const local = await startFakeLocalServer();
+	try {
+		// Основной движок — браузерный, но слот local заполнен: именно его адрес
+		// используется для автозапуска сервера
+		await saveSettings({
+			asrEngine: "browser",
+			asr: { local: { baseUrl: `http://127.0.0.1:${local.port}/v1`, model: "small", apiKey: "" } },
+			asrFallback: "local"
+		});
+		const resp = await fetch(`${base}/dsh-voice-chat/stt?engine=local`, { method: "POST", body: Buffer.from([1, 2, 3]) });
+		assert.equal(resp.status, 200, await resp.clone().text());
+		assert.equal((await resp.json()).text, "текст из локального движка");
+		// Настройка движка не должна меняться разовым переопределением
+		const settings = await (await fetch(`${base}/dsh-voice-chat/settings`)).json();
+		assert.equal(settings.asrEngine, "browser");
+		assert.equal(settings.asrFallback, "local");
+	} finally {
+		local.server.close();
+	}
+});
+
+await test("asrFallback: browser как запасной не принимается", async () => {
+	await saveSettings({ asrFallback: "browser" });
+	const settings = await (await fetch(`${base}/dsh-voice-chat/settings`)).json();
+	assert.equal(settings.asrFallback, "", "browser не может быть запасным сам у себя");
+	await saveSettings({ asrFallback: "local" });
+	const cfg = await (await fetch(`${base}/dsh-voice-chat/config`)).json();
+	assert.equal(cfg.asrFallback, "local", "запасной движок виден и в /config");
+});
+
+await test("Неизвестный ?engine= игнорируется, а не ломает запрос", async () => {
+	const local = await startFakeLocalServer();
+	try {
+		await saveSettings({ asrEngine: "local", asr: { local: { baseUrl: `http://127.0.0.1:${local.port}/v1`, model: "small", apiKey: "" } } });
+		const resp = await fetch(`${base}/dsh-voice-chat/stt?engine=что-то`, { method: "POST", body: Buffer.from([1]) });
+		assert.equal(resp.status, 200, await resp.clone().text());
+	} finally {
+		local.server.close();
+	}
+});
+
 await test("/settings: asrHotkey сохраняется, нормализуется и отдаётся в /config", async () => {
 	// Неразобранное значение → дефолт (правый Ctrl), а не мусор в settings.local.json
 	await saveSettings({ asrHotkey: "shift+ctrl+m" });

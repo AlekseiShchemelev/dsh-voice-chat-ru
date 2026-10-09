@@ -21,7 +21,8 @@ A Doubao-style voice chat plugin for the [DeepSeek Harness](https://github.com/d
 - **No duplicate playback**: which replies were already spoken is remembered per session;
 - **Mute toggle** 🔊: click while playing to mute immediately; click again to resume;
 - **Settings UI**: everything lives inside **DSH's built-in settings dialog** (gear icon → "voice chat"), applied immediately — no restart needed;
-- **Push-to-talk key**: defaults to **Right Ctrl** — **hold** to record, **release** to transcribe and send; the key/combination is configurable in the settings.
+- **Push-to-talk key**: defaults to **Right Ctrl** — **hold** to record, **release** to transcribe and send; the key/combination is configurable in the settings;
+- **If in-browser recognition fails** (Chrome streams audio to Google's servers; Electron has no `SpeechRecognition` at all): the settings panel has a "Check recognition" button that names the actual reason, plus a "Fallback engine" the plugin switches to automatically.
 
 ## Requirements
 

@@ -708,6 +708,45 @@ await test("select получает color-scheme: без него нативны
 	}
 });
 
+console.log("\nБраузерный движок: диагностика и запасной ASR");
+await test("Для browser: кнопка проверки и выбор запасного движка", () => {
+	onChangeOf(tree, "Движок ASR")({ target: { value: "browser" } });
+	tree = renderOnce(Section, stub);
+	assert.match(textOf(tree), /Проверить распознавание/, "нужна явная диагностика");
+	const fb = controlByLabel(tree, "Запасной движок распознавания");
+	assert.equal(fb.props.value, "", "по умолчанию не переключаем");
+	const options = fb.children.map((o) => o.props.value);
+	assert.ok(!options.includes("browser"), "browser не может быть запасным сам у себя");
+	assert.deepEqual(options, ["", "siliconflow", "groq", "mimo", "custom", "local"]);
+	fb.props.onChange({ target: { value: "local" } });
+	tree = renderOnce(Section, stub);
+	assert.equal(controlByLabel(tree, "Запасной движок распознавания").props.value, "local");
+});
+
+await test("Запасной движок сохраняется в настройках", async () => {
+	posts.length = 0;
+	let saveBtn = null;
+	walk(tree, (node) => { if (!saveBtn && node.type === "button" && textOf(node).includes("Сохранить")) saveBtn = node; });
+	saveBtn.props.onClick();
+	await flush();
+	assert.equal(posts[0].body.asrFallback, "local");
+});
+
+await test("Запасной движок приходит из настроек хоста", async () => {
+	const stubF = createReactStub();
+	const SectionF = await loadSettingsSection(stubF, () => Promise.resolve({
+		ok: true, status: 200,
+		json: () => Promise.resolve({ ...HOST_SETTINGS, asrEngine: "browser", asrFallback: "local" })
+	}));
+	let t = renderOnce(SectionF, stubF);
+	await flush();
+	t = renderOnce(SectionF, stubF);
+	t = renderOnce(SectionF, stubF);
+	onChangeOf(t, "Движок ASR")({ target: { value: "browser" } });
+	t = renderOnce(SectionF, stubF);
+	assert.equal(controlByLabel(t, "Запасной движок распознавания").props.value, "local");
+});
+
 console.log("\nКлавиша запуска распознавания");
 const HOST_WITH_HOTKEY = { ...HOST_SETTINGS, asrHotkey: "Ctrl+Shift+M" };
 /** Поле клавиши — input внутри блока (там же кнопки сброса). */

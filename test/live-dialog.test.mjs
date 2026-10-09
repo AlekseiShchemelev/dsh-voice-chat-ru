@@ -147,7 +147,7 @@ function createReactStub() {
 function createWorld(opts = {}) {
 	const settings = {
 		version: "0.5.0",
-		asrEngine: "edge",
+		asrEngine: opts.asrEngine || "edge",
 		autoSend: opts.autoSend !== false,
 		continuousMode: opts.continuousMode === true,
 		silenceMs: 600000, // тишина не должна самопроизвольно останавливать запись в тестах
@@ -156,7 +156,9 @@ function createWorld(opts = {}) {
 		ratePercent: 110,
 		speechLang: "ru-RU",
 		// "" = горячая клавиша выключена; по умолчанию — правый Ctrl
-		asrHotkey: opts.hotkey === undefined ? "ControlRight" : opts.hotkey
+		asrHotkey: opts.hotkey === undefined ? "ControlRight" : opts.hotkey,
+		// "" = не переключать движок при отказе браузерного ASR
+		asrFallback: opts.asrFallback || ""
 	};
 
 	const clock = createClock();
@@ -372,9 +374,9 @@ function fakeModelDirectories(current) {
 	return { directoryFor: () => dir };
 }
 
-async function mount({ continuousMode = false, gumModes = "ok", autoSend = true, hotkey, currentModel = null } = {}) {
+async function mount({ continuousMode = false, gumModes = "ok", autoSend = true, hotkey, currentModel = null, asrEngine, asrFallback } = {}) {
 	const stub = createReactStub();
-	const w = createWorld({ continuousMode, gumModes, autoSend, hotkey });
+	const w = createWorld({ continuousMode, gumModes, autoSend, hotkey, asrEngine, asrFallback });
 	w.env.installGlobals();
 
 	let captured = null;
@@ -407,6 +409,7 @@ async function mount({ continuousMode = false, gumModes = "ok", autoSend = true,
 	const api = {
 		stub,
 		env: w.env,
+		windowStub: w.windowStub,
 		settings: w.env.settings,
 		tree: null,
 		render() {
@@ -935,6 +938,173 @@ await test("Первый запрос не уходит в /stt, пока нас
 	await m.flush();
 	m.render();
 	assert.equal(m.micOpens > 0, true, "после загрузки настроек запись начинается");
+	m.release({ key: "Control", code: "ControlRight" });
+	await m.flush();
+});
+
+console.log("\nБраузерный ASR: диагностика вместо кодов ошибок");
+await test("Браузер без SpeechRecognition: подсказка объясняет причину и предлагает выход", async () => {
+	const m = await mount({ asrEngine: "browser" });
+	// Убираем API целиком — как в Electron/сборках Chromium без Google Speech
+	m.windowStub.SpeechRecognition = undefined;
+	m.windowStub.webkitSpeechRecognition = undefined;
+	await m.ready();
+	m.press({ key: "Control", code: "ControlRight", ctrlKey: true });
+	await m.flush();
+	m.render();
+	assert.match(m.hint, /нет SpeechRecognition/i, "подсказка должна называть причину: " + m.hint);
+	assert.match(m.hint, /Локальный/, "и предлагать рабочий движок");
+	assert.equal(m.micOpens, 0, "запись не должна начинаться, если распознавать нечем");
+	m.release({ key: "Control", code: "ControlRight" });
+	await m.flush();
+});
+
+await test("Ошибка 'network' переводится в причину, а не показывается кодом", async () => {
+	const m = await mount({ asrEngine: "browser" });
+	await m.ready();
+	// Ошибка приходит асинхронно из браузера, поэтому отдаём её через микрозадачу
+	m.windowStub.SpeechRecognition = class {
+		start() { queueMicrotask(() => this.onerror && this.onerror({ error: "network" })); }
+		stop() { }
+	};
+	m.press({ key: "Control", code: "ControlRight", ctrlKey: true });
+	await m.flush();
+	m.render();
+	assert.match(m.hint, /сервер[а-я]* распознавания|google/i, "код network должен быть объяснён: " + m.hint);
+	assert.doesNotMatch(m.hint, /^Ошибка распознавания: network$/);
+	assert.equal(m.micOpens, 0);
+	m.release({ key: "Control", code: "ControlRight" });
+	await m.flush();
+});
+
+await test("Микрофон запрещён: подсказка говорит про разрешение", async () => {
+	const m = await mount({ asrEngine: "browser" });
+	await m.ready();
+	m.windowStub.SpeechRecognition = class {
+		start() { queueMicrotask(() => this.onerror && this.onerror({ error: "not-allowed" })); }
+		stop() { }
+	};
+	m.press({ key: "Control", code: "ControlRight", ctrlKey: true });
+	await m.flush();
+	m.render();
+	assert.match(m.hint, /микрофон запрещён/i, m.hint);
+	m.release({ key: "Control", code: "ControlRight" });
+	await m.flush();
+});
+
+console.log("\nБраузерный ASR: диагностика и запасной движок");
+await test("Без SpeechRecognition: подсказка называет причину и предлагает выход", async () => {
+	const m = await mount({ asrEngine: "browser" });
+	m.windowStub.SpeechRecognition = undefined;
+	m.windowStub.webkitSpeechRecognition = undefined;
+	await m.ready();
+	m.press({ key: "Control", code: "ControlRight", ctrlKey: true });
+	await m.flush();
+	m.render();
+	assert.match(m.hint, /нет SpeechRecognition/i, m.hint);
+	assert.match(m.hint, /Локальный|локальный/i, "нужен совет, куда идти: " + m.hint);
+	assert.equal(m.micOpens, 0);
+	m.release({ key: "Control", code: "ControlRight" });
+	await m.flush();
+});
+
+await test("Ошибка 'network' объясняется словами, а не кодом", async () => {
+	const m = await mount({ asrEngine: "browser" });
+	await m.ready();
+	m.windowStub.SpeechRecognition = class {
+		start() { queueMicrotask(() => this.onerror && this.onerror({ error: "network" })); }
+		stop() { }
+	};
+	m.press({ key: "Control", code: "ControlRight", ctrlKey: true });
+	await m.flush();
+	m.render();
+	assert.doesNotMatch(m.hint, /network/, "пользователю нужен смысл, а не код: " + m.hint);
+	assert.match(m.hint, /Google/i, m.hint);
+	m.release({ key: "Control", code: "ControlRight" });
+	await m.flush();
+});
+
+await test("Отказ браузера уходит в запасной движок, а не пропадает", async () => {
+	const m = await mount({ asrEngine: "browser", asrFallback: "local" });
+	await m.ready();
+	// Ошибка приходит не сразу, а после того, как пользователь что-то сказал:
+	// как в реальности, сначала успевает накопиться подстраховочная запись
+	let fire = null;
+	m.windowStub.SpeechRecognition = class {
+		start() { fire = (code) => this.onerror && this.onerror({ error: code }); }
+		stop() { }
+	};
+	m.press({ key: "Control", code: "ControlRight", ctrlKey: true });
+	await m.flush();
+	m.render();
+	assert.ok(m.recorders.length > 0, "должна быть подстраховочная запись");
+	m.audio();                       // пользователь что-то сказал
+	await m.flush();
+	fire("network");                // браузер отказался
+	await m.flush();
+	m.render();
+	await m.flush();
+	const stt = m.env.calls.filter((c) => c.url.includes("/dsh-voice-chat/stt"));
+	assert.equal(stt.length, 1, "запись должна уйти через запасной движок");
+	assert.match(stt[0].url, /engine=local/, "в запросе указан запасной движок: " + stt[0].url);
+	await m.flush();
+	m.render();
+	assert.deepEqual(m.env.drafts, ["распознанный текст"], "текст должен дойти до поля ввода");
+	m.release({ key: "Control", code: "ControlRight" });
+	await m.flush();
+});
+
+await test("Отказ без накопленной записи подсказывает, куда переключиться", async () => {
+	const m = await mount({ asrEngine: "browser", asrFallback: "local" });
+	await m.ready();
+	let fire = null;
+	m.windowStub.SpeechRecognition = class {
+		start() { fire = (code) => this.onerror && this.onerror({ error: code }); }
+		stop() { }
+	};
+	m.press({ key: "Control", code: "ControlRight", ctrlKey: true });
+	await m.flush();
+	m.render();
+	fire("not-allowed");            // отказ до того, как что-то сказали
+	await m.flush();
+	m.render();
+	assert.equal(m.env.calls.filter((c) => c.url.includes("/dsh-voice-chat/stt")).length, 0,
+		"нечего распознавать — запроса быть не должно");
+	assert.match(m.hint, /микрофон запрещён/i, m.hint);
+	m.release({ key: "Control", code: "ControlRight" });
+	await m.flush();
+});
+
+await test("Успешное распознавание браузером не дёргает запасной движок", async () => {
+	const m = await mount({ asrEngine: "browser", asrFallback: "local" });
+	await m.ready();
+	m.windowStub.SpeechRecognition = class {
+		start() { queueMicrotask(() => this.onresult && this.onresult({ results: [[{ transcript: " фраза " }]] })); }
+		stop() { }
+	};
+	m.press({ key: "Control", code: "ControlRight", ctrlKey: true });
+	await m.flush();
+	m.render();
+	await m.flush();
+	assert.deepEqual(m.env.drafts, ["фраза"], "текст браузера должен уйти сразу");
+	assert.equal(m.env.calls.filter((c) => c.url.includes("/dsh-voice-chat/stt")).length, 0,
+		"при успешном браузерном распознавании /stt не нужен");
+	m.release({ key: "Control", code: "ControlRight" });
+	await m.flush();
+});
+
+await test("Тишина (no-speech) не считается поломкой и не грузит запасной движок", async () => {
+	const m = await mount({ asrEngine: "browser", asrFallback: "local" });
+	await m.ready();
+	m.windowStub.SpeechRecognition = class {
+		start() { queueMicrotask(() => this.onerror && this.onerror({ error: "no-speech" })); }
+		stop() { }
+	};
+	m.press({ key: "Control", code: "ControlRight", ctrlKey: true });
+	await m.flush();
+	m.render();
+	assert.match(m.hint, /Не расслышал/i, m.hint);
+	assert.equal(m.env.calls.filter((c) => c.url.includes("/dsh-voice-chat/stt")).length, 0);
 	m.release({ key: "Control", code: "ControlRight" });
 	await m.flush();
 });
