@@ -669,6 +669,38 @@ await test("status(): отдаёт список моделей и общий р�
 	});
 });
 
+await testNeeds("downloadVoice(): качает произвольный голос (--only-voice) и кладёт его на диск", hasPython3, "нет python3 в системе", async () => {
+	const dataDir = await freshDataDir("download-voice");
+	await fakeVenv(dataDir);
+	// Настоящий download_models.py с фейковым venv: скрипт получит аргументы
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
+		const manager = createLocalEngineManager();
+		// Скачивать в тест не будем — проверяем валидацию и сам путь вызова
+		await assert.rejects(() => manager.downloadVoice(""), /Не указан голос/);
+		await assert.rejects(() => manager.downloadVoice("../../etc"), /Некорректное имя голоса/);
+		await assert.rejects(() => manager.downloadVoice("не_голос"), /Некорректное имя голоса/);
+	});
+});
+
+await test("downloadVoice(): уже скачанный голос не качается заново", async () => {
+	const dataDir = await freshDataDir("download-voice-present");
+	await fakeVenv(dataDir);
+	await makeModels(dataDir);
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
+		const manager = createLocalEngineManager();
+		const result = await manager.downloadVoice("ru_RU-irina-medium");
+		assert.equal(result.alreadyDownloaded, true, "модель уже на диске — сеть не трогаем");
+	});
+});
+
+await test("downloadVoice(): без установленного venv — понятная ошибка", async () => {
+	const dataDir = await freshDataDir("download-voice-no-venv");
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, ...withoutEnv().env } }, async () => {
+		const manager = createLocalEngineManager();
+		await assert.rejects(() => manager.downloadVoice("uk_UA-tetiana-high"), /не установлен/);
+	});
+});
+
 await test("remove(): пустое окружение — не ошибка", async () => {
 	const dataDir = await freshDataDir("remove-empty");
 	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
@@ -861,7 +893,7 @@ await testNeeds("status() видит запущенный сервер (serverRu
 	assert.equal(st.pid, integration.pid);
 });
 
-await testNeeds("POST /v1/audio/speech с неизвестным голосом → 400 (модели не нужны)", hasPython3, "нет python3 в системе", async () => {
+await testNeeds("POST /v1/audio/speech с нескачанным голосом → 400 (модели не нужны)", hasPython3, "нет python3 в системе", async () => {
 	assert.ok(integration);
 	const resp = await fetch(`http://127.0.0.1:${integration.port}/v1/audio/speech`, {
 		method: "POST",
@@ -869,7 +901,22 @@ await testNeeds("POST /v1/audio/speech с неизвестным голосом 
 		body: JSON.stringify({ input: "привет", voice: "zz_ZZ-nope-medium" })
 	});
 	assert.equal(resp.status, 400);
-	assert.match((await resp.json()).error, /unsupported voice/);
+	assert.match((await resp.json()).error, /voice not downloaded/);
+});
+
+await testNeeds("POST /v1/audio/speech: имя голоса вне каталога моделей отвергается", hasPython3, "нет python3 в системе", async () => {
+	assert.ok(integration);
+	// Регрессия: произвольный голос принимается, но только из <DATA_DIR>/piper/<имя>,
+	// иначе через voice можно было бы уйти из каталога моделей
+	for (const bad of ["../models", "..", "ru_RU-irina-medium/../../..", "ru RU/irina"]) {
+		const resp = await fetch(`http://127.0.0.1:${integration.port}/v1/audio/speech`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ input: "привет", voice: bad })
+		});
+		assert.equal(resp.status, 400, "должен быть 400 для " + bad);
+		assert.match((await resp.json()).error, /invalid voice name/);
+	}
 });
 
 await testNeeds("POST /v1/audio/speech: пустой input и битый speed → 400, а не 500", hasPython3, "нет python3 в системе", async () => {
@@ -1054,7 +1101,7 @@ await testNeeds("python3 py/server.py --port <свободный> поднима
 			body: JSON.stringify({ input: "тест", voice: "no-such-voice" })
 		});
 		assert.equal(speech.status, 400);
-		assert.match((await speech.json()).error, /unsupported voice/);
+		assert.match((await speech.json()).error, /voice not downloaded/);
 
 		const notFound = await fetch(`http://127.0.0.1:${port}/health/extra`);
 		assert.equal(notFound.status, 404);

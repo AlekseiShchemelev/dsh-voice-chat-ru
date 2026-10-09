@@ -427,9 +427,11 @@ await test("Движок local (TTS): голос Piper — список, лиш�
 	tree = renderOnce(Section, stub);
 	const voice = controlByLabel(tree, "Голос (локальный Piper)");
 	assert.equal(voice.props.value, "ru_RU-irina-medium");
+	// Четыре русских голоса (все medium — других качеств у Piper нет) + режим «скачать ещё»
 	assert.deepEqual(voice.children.map((o) => o.props.value), [
-		"ru_RU-irina-medium", "ru_RU-ruslan-medium", "ru_RU-dmitri-medium", "ru_RU-denis-medium"
+		"ru_RU-irina-medium", "ru_RU-ruslan-medium", "ru_RU-dmitri-medium", "ru_RU-denis-medium", "custom"
 	]);
+	assert.match(textOf(tree), /всего четыре/, "нужно честно сказать, что других русских голосов нет");
 	voice.props.onChange({ target: { value: "ru_RU-denis-medium" } });
 	tree = renderOnce(Section, stub);
 	assert.equal(controlByLabel(tree, "Голос (локальный Piper)").props.value, "ru_RU-denis-medium");
@@ -513,7 +515,10 @@ async function renderLocalBox(statusBody, posts) {
 			}
 			return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(statusBody) });
 		}
-		return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(HOST_SETTINGS) });
+		return Promise.resolve({
+			ok: true, status: 200,
+			json: () => Promise.resolve({ ...HOST_SETTINGS, ttsEngine: statusBody.ttsEngine || "edge" })
+		});
 	});
 	let t = renderOnce(SectionX, stubX);
 	await flush();
@@ -696,6 +701,47 @@ await test("Список скачанных моделей: видно разм�
 	await flush();
 	assert.deepEqual(posts, ["/dsh-voice-chat/local/remove-model?id=models--Systran--faster-whisper-medium"]);
 	assert.match(removeBtns[1].props.title, /medium/, "подсказка должна называть модель, которую удаляет");
+});
+
+await test("Скачивание произвольного голоса: режим «Другой голос» + кнопка", async () => {
+	const posts = [];
+	// Отдельный стенд: поля голоса живут в форме настроек со своим fetch
+	const stubV = createReactStub();
+	const SectionV = await loadSettingsSection(stubV, (url, options = {}) => {
+		if (String(url).includes("/local/download-voice")) {
+			if (options.method === "POST") posts.push(String(url));
+			return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, alreadyDownloaded: false }) });
+		}
+		return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(HOST_SETTINGS) });
+	});
+	let t = renderOnce(SectionV, stubV);
+	await flush();
+	t = renderOnce(SectionV, stubV);
+	t = renderOnce(SectionV, stubV);
+	onChangeOf(t, "Движок TTS")({ target: { value: "local" } });
+	t = renderOnce(SectionV, stubV);
+	assert.ok(controlByLabel(t, "Голос (локальный Piper)"), "поле голоса должно быть");
+
+	controlByLabel(t, "Голос (локальный Piper)").props.onChange({ target: { value: "custom" } });
+	t = renderOnce(SectionV, stubV);
+	const nameControl = controlByLabel(t, "Имя голоса");
+	assert.ok(nameControl, "должно появиться поле ввода имени");
+	const nameInput = (() => {
+		let input = null;
+		walk(nameControl, (node) => { if (!input && node.type === "input") input = node; });
+		assert.ok(input, "в поле должен быть input");
+		return input;
+	})();
+	const btn = buttonByText(t, /Скачать/);
+	assert.ok(btn, "кнопка скачивания должна быть");
+	assert.equal(btn.props.disabled, true, "без имени кнопка неактивна");
+
+	nameInput.props.onChange({ target: { value: "uk_UA-tetiana-high" } });
+	t = renderOnce(SectionV, stubV);
+	assert.equal(buttonByText(t, /Скачать/).props.disabled, false, "с именем кнопка активна");
+	await buttonByText(t, /Скачать/).props.onClick();
+	await flush();
+	assert.deepEqual(posts, ["/dsh-voice-chat/local/download-voice?voice=uk_UA-tetiana-high"]);
 });
 
 await test("Без моделей блок списка не показывается", async () => {

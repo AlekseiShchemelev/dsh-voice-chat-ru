@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import os
+import re
 import struct
 import sys
 import threading
@@ -24,12 +25,17 @@ DATA_DIR = Path(
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 SUPPORTED_WHISPER_MODELS = {"tiny", "base", "small", "medium", "large-v3"}
+# Голоса по умолчанию. Список НЕ ограничивает выбор: сервер принимает любой голос,
+# который реально лежит в <DATA_DIR>/piper/<имя>/<имя>.onnx — пользователь может
+# докачать украинский или английский голос и выбрать его в настройках.
 SUPPORTED_PIPER_VOICES = {
     "ru_RU-irina-medium",
     "ru_RU-ruslan-medium",
     "ru_RU-dmitri-medium",
     "ru_RU-denis-medium",
 }
+# Имя каталога модели: только буквы/цифры/дефис/подчёркивание (защита от ../../)
+VOICE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 _whisper_model = None
 _whisper_lock = threading.Lock()
@@ -259,9 +265,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "missing 'input' field"})
             return
 
-        voice_name = data.get("voice", "ru_RU-irina-medium")
-        if voice_name not in SUPPORTED_PIPER_VOICES:
-            self._send_json(400, {"error": f"unsupported voice: {voice_name}"})
+        voice_name = str(data.get("voice", "ru_RU-irina-medium"))
+        # Принимаем любой скачанный голос, но только из каталога моделей:
+        # иначе через voice: "../../.." можно было бы уйти из DATA_DIR
+        if not VOICE_NAME_RE.match(voice_name):
+            self._send_json(400, {"error": f"invalid voice name: {voice_name}"})
+            return
+        voice_dir = DATA_DIR / "piper" / voice_name
+        if voice_name not in SUPPORTED_PIPER_VOICES and not (voice_dir / f"{voice_name}.onnx").exists():
+            self._send_json(400, {
+                "error": f"voice not downloaded: {voice_name}. "
+                "Скачайте его в настройках (движок «Локальный» → Голос) "
+                f"или используйте один из: {', '.join(sorted(SUPPORTED_PIPER_VOICES))}"
+            })
             return
 
         try:

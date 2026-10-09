@@ -173,6 +173,11 @@ def main():
     parser = argparse.ArgumentParser(description="Download models for DSH Voice Chat")
     parser.add_argument("--whisper-model", default="small", help="Whisper model size")
     parser.add_argument("--piper-voice", default=PIPER_VOICE_NAME, help="Piper voice name")
+    parser.add_argument(
+        "--only-voice",
+        action="store_true",
+        help="Скачать только голос Piper, не трогая модель faster-whisper",
+    )
     args = parser.parse_args()
 
     logger.info("Data directory: %s", DATA_DIR)
@@ -184,6 +189,13 @@ def main():
         # Piper без голоса не полезен, но Whisper ещё можно скачать: сообщаем и идём дальше,
         # итоговую ошибку соберёт вызывающая сторона (проверит обе модели на диске)
         logger.error("Piper: %s", exc)
+        if args.only_voice:
+            # Пользователь просил конкретный голос — молча скачивать ещё и Whisper незачем
+            raise
+
+    if args.only_voice:
+        logger.info("Voice ready: %s", args.piper_voice)
+        return
 
     download_whisper_model(args.whisper_model)
     logger.info("All models downloaded successfully")

@@ -281,6 +281,13 @@ await test("/local/remove-model: чужой идентификатор откл�
 	assert.equal(empty.status, 400);
 });
 
+await test("/local/download-voice: кривое имя отклоняется, а не качается", async () => {
+	for (const bad of ["", "../../etc", "не_голос"]) {
+		const resp = await fetch(`${base}/dsh-voice-chat/local/download-voice?voice=${encodeURIComponent(bad)}`, { method: "POST" });
+		assert.equal(resp.status, 400, "должен быть 400 для " + JSON.stringify(bad));
+	}
+});
+
 await test("POST /local/start понимает ?port= (а не парсит его как '=число')", async () => {
 	// Порт занят «нашим» локальным сервером → start должен вернуть alreadyRunning, не упав
 	const local = await startFakeLocalServer();

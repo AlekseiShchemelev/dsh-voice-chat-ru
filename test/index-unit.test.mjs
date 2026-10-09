@@ -875,7 +875,9 @@ test("sanitizeSettings: asrHotkey нормализуется, мусор → з�
 console.log("\nЛокальный движок: списки моделей и порт по умолчанию");
 
 test("списки совпадают с тем, что принимает py/server.py", () => {
-	// Держим вручную с py/server.py: SUPPORTED_WHISPER_MODELS / SUPPORTED_PIPER_VOICES
+	// Русских голосов в piper-voices ровно четыре и все medium — проверено по
+	// репозиторию (low/high/x_low отдают 404). Другие языки сервер принимает,
+	// если голос скачан: список здесь только для «быстрых» русских.
 	assert.deepEqual(LOCAL_ASR_MODELS, ["tiny", "base", "small", "medium", "large-v3"]);
 	assert.deepEqual(LOCAL_TTS_VOICES, [
 		"ru_RU-irina-medium", "ru_RU-ruslan-medium", "ru_RU-dmitri-medium", "ru_RU-denis-medium"
