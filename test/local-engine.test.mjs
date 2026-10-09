@@ -584,6 +584,91 @@ await test("remove({ includeModels: false }) оставляет модели н�
 	});
 });
 
+await test("downloadedModels(): перечисляет все скачанные модели с размерами", async () => {
+	const dataDir = await freshDataDir("models-list");
+	await fakeVenv(dataDir);
+	await makeModels(dataDir);
+	// Второй голос Piper и вторая модель whisper — «пользователь накачал лишнего»
+	const voice2 = path.join(dataDir, "models", "piper", "ru_RU-denis-medium");
+	await mkdir(voice2, { recursive: true });
+	await writeFile(path.join(voice2, "ru_RU-denis-medium.onnx"), Buffer.alloc(2048));
+	await writeFile(path.join(voice2, "ru_RU-denis-medium.onnx.json"), "{}", "utf8");
+	await mkdir(path.join(dataDir, "models", "models--Systran--faster-whisper-medium"), { recursive: true });
+	await writeFile(path.join(dataDir, "models", "models--Systran--faster-whisper-medium", "bin"), Buffer.alloc(4096), "utf8");
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
+		const manager = createLocalEngineManager();
+		const models = await manager.downloadedModels();
+		// small + medium + два голоса Piper
+		assert.equal(models.length, 4, JSON.stringify(models.map((m) => m.id)));
+		const byId = Object.fromEntries(models.map((m) => [m.id, m]));
+		assert.ok(byId["piper/ru_RU-irina-medium"], "голос irina должен быть в списке");
+		assert.ok(byId["piper/ru_RU-denis-medium"], "второй голос тоже должен попасть в список");
+		assert.ok(byId["models--Systran--faster-whisper-small"], "модель small");
+		assert.ok(byId["models--Systran--faster-whisper-medium"], "модель medium");
+		assert.equal(byId["piper/ru_RU-irina-medium"].inUse, true, "текущий голос помечен используемым");
+		assert.equal(byId["piper/ru_RU-denis-medium"].inUse, false);
+		assert.equal(byId["models--Systran--faster-whisper-small"].inUse, true);
+		assert.ok(byId["piper/ru_RU-denis-medium"].bytes >= 2048, "размер считается по файлам");
+		assert.equal(byId["models--Systran--faster-whisper-medium"].name, "medium", "имя вытаскивается из каталога");
+		// Список отсортирован по убыванию размера — самые жирные сверху
+		const sizes = models.map((m) => m.bytes);
+		assert.deepEqual(sizes, sizes.slice().sort((a, b) => b - a));
+	});
+});
+
+await test("removeModel(): удаляет ровно выбранную модель, остальные целы", async () => {
+	const dataDir = await freshDataDir("remove-one-model");
+	await fakeVenv(dataDir);
+	await makeModels(dataDir);
+	const voice2 = path.join(dataDir, "models", "piper", "ru_RU-denis-medium");
+	await mkdir(voice2, { recursive: true });
+	await writeFile(path.join(voice2, "ru_RU-denis-medium.onnx"), Buffer.alloc(1024), "utf8");
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
+		const manager = createLocalEngineManager();
+		const result = await manager.removeModel("piper/ru_RU-denis-medium");
+		assert.equal(result.name, "ru_RU-denis-medium");
+		assert.ok(result.freedBytes >= 1024);
+		assert.equal(await pathExists(voice2), false, "выбранный голос удалён");
+		// Остальное на месте — это точечное удаление, а не «убрать всё»
+		assert.equal(await pathExists(path.join(dataDir, "models", "piper", "ru_RU-irina-medium")), true);
+		assert.equal(await pathExists(path.join(dataDir, "models", "models--Systran--faster-whisper-small")), true);
+		const left = await manager.downloadedModels();
+		assert.deepEqual(left.map((m) => m.id).sort(),
+			["models--Systran--faster-whisper-small", "piper/ru_RU-irina-medium"],
+			"остались текущие модели, лишний голос убран");
+	});
+});
+
+await test("removeModel(): чужие и несуществующие пути отклоняются", async () => {
+	const dataDir = await freshDataDir("remove-model-guard");
+	await fakeVenv(dataDir);
+	await makeModels(dataDir);
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
+		const manager = createLocalEngineManager();
+		// Каталог вне списка моделей удалять нельзя, даже если он существует
+		for (const bad of ["", "../../models", "venv", "piper/../piper", "logs", "не существует"]) {
+			await assert.rejects(() => manager.removeModel(bad), /Модель|идентификатор/,
+				"должно быть отклонено: " + bad);
+		}
+		// Всё на месте после попыток
+		assert.equal(await pathExists(path.join(dataDir, "venv")), true, "venv не тронут");
+		assert.equal(await pathExists(path.join(dataDir, "models")), true, "модели не тронуты");
+	});
+});
+
+await test("status(): отдаёт список моделей и общий размер", async () => {
+	const dataDir = await freshDataDir("status-models-list");
+	await fakeVenv(dataDir);
+	await makeModels(dataDir);
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
+		const st = await createLocalEngineManager().status();
+		assert.ok(Array.isArray(st.models), "status должен содержать список моделей");
+		// makeModels кладёт голос Piper и каталог faster-whisper-small
+		assert.equal(st.models.length, 2, JSON.stringify(st.models.map((m) => m.id)));
+		assert.ok(st.modelsBytes > 0, "общий размер известен");
+	});
+});
+
 await test("remove(): пустое окружение — не ошибка", async () => {
 	const dataDir = await freshDataDir("remove-empty");
 	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {

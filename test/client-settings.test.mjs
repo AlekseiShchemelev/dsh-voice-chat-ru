@@ -566,21 +566,44 @@ await test("Блок показывает состояние окружения 
 	assert.match(text, /Модели/, "Должна быть строка про модели");
 	assert.match(text, /не запущен/, "Незапущенный сервер отмечен в статусе");
 	assert.match(text, /\/dsh-voice-chat/, "Показывается каталог данных");
-	assert.ok(buttonByText(box, /Запустить сервер/), "Есть кнопка запуска сервера");
-	assert.ok(buttonByText(box, /Остановить сервер/), "Есть кнопка остановки сервера");
 	// Установленный, но не запущенный: установка не нужна, запустить — можно
 	assert.match(textOf(buttonByText(box, /Установлено|Установить локальный/)), /Установлено/);
 	assert.equal(buttonByText(box, /Установлено/).props.disabled, true);
-	assert.equal(buttonByText(box, /Запустить сервер/).props.disabled, false);
-	assert.equal(buttonByText(box, /Остановить сервер/).props.disabled, true, "Сервер не запущен — останавливать нечего");
+	// Одна кнопка на состояние: предлагает запуск
+	const toggle = buttonByText(box, /Запустить сервер/);
+	assert.ok(toggle, "Есть переключатель сервера");
+	assert.equal(toggle.props.disabled, false);
+	assert.equal(buttonByText(box, /Остановить сервер/), null, "отдельной кнопки остановки быть не должно");
 });
 
-await test("Кнопка «Запустить сервер» дёргает /local/start", async () => {
+await test("Переключатель сервера: не запущен → /local/start, запущен → /local/stop", async () => {
 	const posts = [];
-	const { box } = await renderLocalBox(LOCAL_READY, posts);
-	await buttonByText(box, /Запустить сервер/).props.onClick();
+	const { box, rerender } = await renderLocalBox(LOCAL_READY, posts);
+	await buttonByText(await rerender(), /Запустить сервер/).props.onClick();
 	await flush();
-	assert.deepEqual(posts, ["/dsh-voice-chat/local/start"]);
+	assert.deepEqual(posts, ["/dsh-voice-chat/local/start"], "не запущен → старт");
+
+	// Тот же переключатель на работающем сервере предлагает остановку
+	const posts2 = [];
+	const running = await renderLocalBox({ ...LOCAL_READY, serverRunning: true, pid: 4242 }, posts2);
+	const toggle = buttonByText(running.box, /Остановить сервер/);
+	assert.ok(toggle, "работающий сервер: кнопка должна предлагать остановку");
+	assert.equal(toggle.props.disabled, false);
+	await toggle.props.onClick();
+	await flush();
+	assert.deepEqual(posts2, ["/dsh-voice-chat/local/stop"]);
+	assert.equal(buttonByText(running.box, /Запустить сервер/), null, "старых кнопок быть не должно");
+	void box; void rerender;
+});
+
+await test("Чужой сервер: переключатель не предлагает остановку", async () => {
+	const posts = [];
+	const { box } = await renderLocalBox({
+		...LOCAL_READY, serverRunning: true, external: true, pid: null
+	}, posts);
+	const toggle = buttonByText(box, /Сервер запущен вне плагина/);
+	assert.ok(toggle, "нужно показать, что сервер чужой");
+	assert.equal(toggle.props.disabled, true, "остановить чужой процесс нельзя");
 });
 
 await test("Не установленный движок: кнопка установки активна и дёргает /local/install", async () => {
@@ -647,14 +670,47 @@ await test("Причина сбоя и хвост лога установки п
 	assert.match(text, /urlopen error timed out/, "хвост лога тоже на экране");
 });
 
+await test("Список скачанных моделей: видно размеры и удаление по одной", async () => {
+	const posts = [];
+	const { box } = await renderLocalBox({
+		...LOCAL_READY,
+		modelsBytes: 1_612_396_736,
+		models: [
+			{ id: "models--Systran--faster-whisper-small", type: "whisper", name: "small", bytes: 483_183_820, inUse: true },
+			{ id: "models--Systran--faster-whisper-medium", type: "whisper", name: "medium", bytes: 1_529_402_880, inUse: false },
+			{ id: "piper/ru_RU-irina-medium", type: "piper", name: "ru_RU-irina-medium", bytes: 63_402_496, inUse: true },
+			{ id: "piper/ru_RU-denis-medium", type: "piper", name: "ru_RU-denis-medium", bytes: 63_402_496, inUse: false }
+		]
+	}, posts);
+	const text = textOf(box);
+	assert.match(text, /всего 1\.61 ГБ/, "общий размер должен быть виден");
+	assert.match(text, /small · 483 МБ/, "размер каждой модели");
+	assert.match(text, /medium · 1\.53 ГБ/);
+	assert.match(text, /используется сейчас/, "текущие модели помечены");
+
+	// Кнопка удаления у лишней модели убирает ровно её
+	const removeBtns = [];
+	walk(box, (node) => { if (node.type === "button" && textOf(node) === "Удалить") removeBtns.push(node); });
+	assert.equal(removeBtns.length, 4, "удаление доступно для каждой модели");
+	await removeBtns[1].props.onClick();
+	await flush();
+	assert.deepEqual(posts, ["/dsh-voice-chat/local/remove-model?id=models--Systran--faster-whisper-medium"]);
+	assert.match(removeBtns[1].props.title, /medium/, "подсказка должна называть модель, которую удаляет");
+});
+
+await test("Без моделей блок списка не показывается", async () => {
+	const { box } = await renderLocalBox({ ...LOCAL_READY, models: [], modelsBytes: 0 }, []);
+	assert.doesNotMatch(textOf(box), /Скачанные модели/);
+});
+
 await test("Запущенный сервер: кнопка остановки активна", async () => {
 	const posts = [];
 	const { box } = await renderLocalBox({
 		...LOCAL_READY, serverRunning: true, pid: 4242
 	}, posts);
 	assert.match(textOf(box), /работает на порту 8765 \(pid 4242\)/);
-	assert.equal(buttonByText(box, /Запустить сервер/).props.disabled, true);
 	const stopBtn = buttonByText(box, /Остановить сервер/);
+	assert.ok(stopBtn, "работающий сервер: кнопка предлагает остановку");
 	assert.equal(stopBtn.props.disabled, false);
 	await stopBtn.props.onClick();
 	await flush();

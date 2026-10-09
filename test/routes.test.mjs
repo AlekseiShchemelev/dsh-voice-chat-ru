@@ -272,6 +272,15 @@ await test("POST /local/remove отвечает и сбрасывает стат
 	assert.equal(keep.status, 200);
 });
 
+await test("/local/remove-model: чужой идентификатор отклоняется", async () => {
+	const resp = await fetch(`${base}/dsh-voice-chat/local/remove-model?id=../../etc`, { method: "POST" });
+	assert.equal(resp.status, 400);
+	assert.match((await resp.json()).error, /Модель|идентификатор/);
+	// Пустой id — тоже ошибка, а не молчаливый успех
+	const empty = await fetch(`${base}/dsh-voice-chat/local/remove-model`, { method: "POST" });
+	assert.equal(empty.status, 400);
+});
+
 await test("POST /local/start понимает ?port= (а не парсит его как '=число')", async () => {
 	// Порт занят «нашим» локальным сервером → start должен вернуть alreadyRunning, не упав
 	const local = await startFakeLocalServer();
