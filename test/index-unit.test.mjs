@@ -727,6 +727,20 @@ test("localPort: порт из 127.0.0.1:xxxx адреса слота", () => {
 	assert.equal(localPort({ local: { port: 7777 } }, ""), 7777);
 });
 
+await testAsync("transcribe: движок browser → понятный отказ, а не «не настроен ключ»", async () => {
+	// Браузерный движок работает через Web Speech API и сюда не должен попадать;
+	// раньше он отваливался с жалобой на ключ, которая сбивала с толку
+	await assert.rejects(
+		() => transcribe(Buffer.from([1]), { engine: "browser", baseUrl: "", model: "", apiKey: "" }),
+		(err) => {
+			assert.equal(err.status, 400);
+			assert.match(err.message, /Web Speech API/);
+			assert.doesNotMatch(err.message, /ключ/i);
+			return true;
+		}
+	);
+});
+
 await testAsync("transcribe: движок local без apiKey → запрос уходит, Authorization не шлём", async () => {
 	let seen = null;
 	const { server, baseUrl } = await startFakeAsr((req, res, body) => {

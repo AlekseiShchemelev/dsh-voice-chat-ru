@@ -167,6 +167,32 @@ await test("/local/status отдаёт installing/installStage/installError", as
 	assert.equal(body.installing, false);
 });
 
+await test("TTS движка browser: понятный отказ вместо молчаливого Edge TTS", async () => {
+	await saveSettings({ ttsEngine: "browser", tts: { browser: { voice: "" } } });
+	const resp = await fetch(`${base}/dsh-voice-chat/tts?text=привет`);
+	assert.equal(resp.status, 400, "озвучку делает браузер, плагин не должен подменять её Edge TTS");
+	const body = await resp.json();
+	assert.match(body.error, /speechSynthesis/);
+	// И /speak ведёт себя так же
+	const speak = await fetch(`${base}/dsh-voice-chat/speak`, {
+		method: "POST", headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ text: "привет" })
+	});
+	assert.equal(speak.status, 400);
+	assert.match((await speak.json()).error, /speechSynthesis/);
+	await saveSettings({ ttsEngine: "edge" });
+});
+
+await test("STT движка browser: отказ без жалобы на ключ", async () => {
+	await saveSettings({ asrEngine: "browser", asr: { browser: { baseUrl: "", model: "", apiKey: "" } } });
+	const resp = await fetch(`${base}/dsh-voice-chat/stt`, { method: "POST", body: Buffer.from([1]) });
+	assert.equal(resp.status, 400);
+	const body = await resp.json();
+	assert.match(body.error, /Web Speech API/);
+	assert.doesNotMatch(body.error, /ключ/i);
+	await saveSettings({ asrEngine: "local" });
+});
+
 await test("/settings: asrHotkey сохраняется, нормализуется и отдаётся в /config", async () => {
 	// Неразобранное значение → дефолт (правый Ctrl), а не мусор в settings.local.json
 	await saveSettings({ asrHotkey: "shift+ctrl+m" });

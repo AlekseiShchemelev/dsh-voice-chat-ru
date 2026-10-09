@@ -263,7 +263,7 @@ function createWorld(opts = {}) {
 
 	const json = (data) => () => Promise.resolve(data);
 	const fetchImpl = (url, options = {}) => {
-		env.calls.push({ url, method: options.method || "GET" });
+		env.calls.push({ url, method: options.method || "GET", body: options.body ? String(options.body) : null });
 		if (String(url).startsWith("/dsh-voice-chat/settings")) {
 			return Promise.resolve({ ok: true, status: 200, json: json(settings) });
 		}
@@ -355,7 +355,24 @@ function buttonsOf(tree) {
 }
 
 // ---------- сборка мира: загрузка client.js + рендер кнопки ----------
-async function mount({ continuousMode = false, gumModes = "ok", autoSend = true, hotkey } = {}) {
+/**
+ * Заглушка modelDirectories: без неё useCurrentModel всегда null, и опечатка
+ * вида `current.model` осталась бы незамеченной (короткое замыкание на null).
+ */
+function fakeModelDirectories(current) {
+	const listeners = new Set();
+	const snapshot = { current, status: "ready" };
+	const dir = {
+		store: {
+			getSnapshot: () => snapshot,
+			subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
+		},
+		load: async () => {}
+	};
+	return { directoryFor: () => dir };
+}
+
+async function mount({ continuousMode = false, gumModes = "ok", autoSend = true, hotkey, currentModel = null } = {}) {
 	const stub = createReactStub();
 	const w = createWorld({ continuousMode, gumModes, autoSend, hotkey });
 	w.env.installGlobals();
@@ -379,7 +396,10 @@ async function mount({ continuousMode = false, gumModes = "ok", autoSend = true,
 	};
 	exportsObj.apply({
 		get: (name) => (name === "slots" ? fakeSlots : undefined),
-		inject: (deps, fn) => fn({ slots: fakeSlots, modelDirectories: null })
+		inject: (deps, fn) => fn({
+			slots: fakeSlots,
+			modelDirectories: currentModel ? fakeModelDirectories(currentModel) : null
+		})
 	});
 	const Wrapper = registered["conversation.input.right"];
 	assert.equal(typeof Wrapper, "function", "должен регистрироваться слот conversation.input.right");
@@ -883,6 +903,40 @@ await test("Подсказка кнопки микрофона показыва�
 	const m3 = await mount({ hotkey: "" });
 	await m3.ready();
 	assert.doesNotMatch(String(m3.buttons()[0].props.title), /удерживайте/);
+});
+
+console.log("\nРегрессии: озвучка и выбор движка");
+await test("/speak получает модель из текущего диалога (опечатка current.model роняла все запросы)", async () => {
+	const m = await mount({ currentModel: { provider: "deepseek-official", model: "deepseek-v4-flash" } });
+	await m.ready();
+	await m.turn("Ответ ассистента");
+	await m.waitSpeech();
+	const speak = m.env.calls.filter((c) => c.url === "/dsh-voice-chat/speak");
+	assert.ok(speak.length > 0, "клиент должен был вызвать /speak");
+	// Ссылка на несуществующую переменную бросила бы ReferenceError ещё до fetch
+	let body = null;
+	assert.doesNotThrow(() => { body = JSON.parse(speak[speak.length - 1].body); });
+	assert.ok(body.text && body.text.length > 0, "в /speak должен уходить текст для озвучки");
+	assert.equal(body.llmProvider, "deepseek-official", "провайдер текущей модели передаётся в /speak");
+	assert.equal(body.llmModel, "deepseek-v4-flash", "модель текущей модели передаётся в /speak");
+});
+
+await test("Первый запрос не уходит в /stt, пока настройки не загрузились", async () => {
+	const m = await mount();
+	m.render();
+	// Настройки ещё не пришли — движок неизвестен, ждём их вместо записи
+	await m.press({ key: "Control", code: "ControlRight", ctrlKey: true });
+	await m.flush();
+	const sttCalls = m.env.calls.filter((c) => c.url === "/dsh-voice-chat/stt");
+	assert.equal(sttCalls.length, 0, "без настроек нельзя выбирать движок и стучаться в /stt");
+	// После загрузки настроек кнопка работает как обычно
+	await m.ready();
+	m.press({ key: "Control", code: "ControlRight", ctrlKey: true });
+	await m.flush();
+	m.render();
+	assert.equal(m.micOpens > 0, true, "после загрузки настроек запись начинается");
+	m.release({ key: "Control", code: "ControlRight" });
+	await m.flush();
 });
 
 console.log(`\n${passed} пройдено${process.exitCode ? " (есть падения)" : ""}`);
