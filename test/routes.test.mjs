@@ -186,6 +186,24 @@ await test("/settings: asrHotkey сохраняется, нормализует�
 	await saveSettings({ asrHotkey: "ControlRight" });
 });
 
+await test("/local/status: hasFiles/installedFiles показывают, есть ли что удалять", async () => {
+	const body = await (await fetch(`${base}/dsh-voice-chat/local/status`)).json();
+	assert.equal(typeof body.hasFiles, "boolean");
+	assert.ok(Array.isArray(body.installedFiles));
+});
+
+await test("POST /local/remove отвечает и сбрасывает статус", async () => {
+	const resp = await fetch(`${base}/dsh-voice-chat/local/remove`, { method: "POST" });
+	const body = await resp.json();
+	assert.equal(resp.status, 200, JSON.stringify(body));
+	assert.equal(body.ok, true);
+	assert.ok(Array.isArray(body.removed));
+	assert.equal(typeof body.status.hasFiles, "boolean");
+	// keepModels=true — вариант без сноса моделей принимается тоже
+	const keep = await fetch(`${base}/dsh-voice-chat/local/remove?keepModels=true`, { method: "POST" });
+	assert.equal(keep.status, 200);
+});
+
 await test("POST /local/start понимает ?port= (а не парсит его как '=число')", async () => {
 	// Порт занят «нашим» локальным сервером → start должен вернуть alreadyRunning, не упав
 	const local = await startFakeLocalServer();

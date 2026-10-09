@@ -748,6 +748,32 @@ await testAsync("transcribe: движок local без apiKey → запрос �
 	}
 });
 
+await testAsync("transcribe: язык из настроек уходит в форму (локальному Whisper он нужен)", async () => {
+	let seen = null;
+	const { server, baseUrl } = await startFakeAsr((req, res, body) => {
+		seen = body.toString("latin1");
+		res.writeHead(200, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ text: "ок" }));
+	});
+	try {
+		await transcribe(Buffer.from([1]), {
+			engine: "local", baseUrl: `${baseUrl}/v1`, model: "small", apiKey: "", language: "ru"
+		});
+		assert.match(seen, /name="language"[\s\S]*ru/, "язык должен уходить отдельным полем");
+		// Без языка (автоопределение) поле не добавляется
+		await transcribe(Buffer.from([1]), { engine: "local", baseUrl: `${baseUrl}/v1`, model: "small", apiKey: "" });
+		assert.doesNotMatch(seen, /name="language"/);
+	} finally {
+		await closeServer(server);
+	}
+});
+
+test("resolveAsrConfig берёт язык из общих настроек речи (ru-RU → ru)", () => {
+	assert.equal(resolveAsrConfig({}, { asrEngine: "local", speechLang: "ru-RU" }).language, "ru");
+	assert.equal(resolveAsrConfig({}, { asrEngine: "local", speechLang: "zh-CN" }).language, "zh");
+	assert.equal(resolveAsrConfig({}, { asrEngine: "local" }).language, "", "язык не задан → автоопределение");
+});
+
 await testAsync("transcribe: engine=browser без apiKey всё ещё 400 (не наш локальный движок)", async () => {
 	await assert.rejects(
 		() => transcribe(Buffer.from([1]), { engine: "browser", baseUrl: "http://127.0.0.1:1/v1", model: "", apiKey: "" }),

@@ -1,2 +1,5 @@
+# faster-whisper тянет av сам, но мы декодируем аудио им напрямую (см. server.py:
+# внутренний decode_audio faster-whisper несовместим со свежим PyAV)
 faster-whisper>=1.0.0
 piper-tts>=1.2.0
+numpy>=1.21

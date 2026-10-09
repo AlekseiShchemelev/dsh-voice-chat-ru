@@ -1,6 +1,6 @@
 {
   "name": "dsh-voice-chat",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Русский форк плагина голосового чата для DSH: кнопка микрофона → речь в текст → автоотправка, ответы AI озвучиваются. ASR: SiliconFlow / Groq / MiMo / OpenAI-совместимый / браузер / локальный faster-whisper. TTS: Edge / MiMo / OpenAI-совместимый / браузер / локальный Piper. Постоянный диалог, скорость и язык речи.",
   "repository": {
     "type": "git",

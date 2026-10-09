@@ -17,6 +17,11 @@ import { fileURLToPath } from "node:url";
 
 import { createLocalEngineManager } from "../lib/local-engine.js";
 
+/** Есть ли путь на диске (fs.stat без исключений). */
+async function pathExists(target) {
+	try { await stat(target); return true; } catch { return false; }
+}
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, "..");
 const SERVER_PY = path.join(ROOT, "py", "server.py");
@@ -47,9 +52,15 @@ async function testNeeds(name, ready, why, fn) {
 	await test(name, fn);
 }
 
+/**
+ * Интерпретатор для «реальных» проверок py/*. Можно переопределить
+ * DSH_TEST_PYTHON=/путь/к/venv/bin/python — тогда тесты проверяют код
+ * на том же окружении, где стоит локальный движок (с numpy/av).
+ */
+const PYTHON = process.env.DSH_TEST_PYTHON || "python3";
 const hasPython3 = async () => {
 	const { spawnSync } = await import("node:child_process");
-	const res = spawnSync("python3", ["--version"], { encoding: "utf8" });
+	const res = spawnSync(PYTHON, ["--version"], { encoding: "utf8" });
 	return res.status === 0;
 };
 
@@ -537,6 +548,65 @@ await test("install(): ошибка попадает в installError и не «�
 	});
 });
 
+await test("remove(): сносит python/venv/models/logs и сбрасывает кэш проверки", async () => {
+	const dataDir = await freshDataDir("remove-all");
+	await fakeVenv(dataDir);
+	await mkdir(path.join(dataDir, "python"), { recursive: true });   // portable Python тоже сносим
+	await makeModels(dataDir);
+	await mkdir(path.join(dataDir, "logs"), { recursive: true });
+	await writeFile(path.join(dataDir, "logs", "install.log"), "log", "utf8");
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
+		const manager = createLocalEngineManager();
+		assert.equal((await manager.status()).hasFiles, true, "на диске есть что удалять");
+		const result = await manager.remove();
+		assert.deepEqual(result.removed.slice().sort(), ["logs", "models", "python", "venv"]);
+		for (const sub of ["venv", "python", "models", "logs"]) {
+			assert.equal(await pathExists(path.join(dataDir, sub)), false, sub + " должен быть удалён");
+		}
+		const after = await manager.status();
+		assert.equal(after.hasFiles, false);
+		assert.equal(after.venvReady, false);
+		assert.equal(after.modelsReady, false);
+		assert.equal(after.depsReady, null, "кэш импорта сброшен");
+	});
+});
+
+await test("remove({ includeModels: false }) оставляет модели на месте", async () => {
+	const dataDir = await freshDataDir("remove-keep-models");
+	await fakeVenv(dataDir);
+	const models = await makeModels(dataDir);
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
+		const manager = createLocalEngineManager();
+		const result = await manager.remove({ includeModels: false });
+		assert.ok(!result.removed.includes("models"));
+		assert.ok(await pathExists(models), "модели должны остаться");
+		assert.equal(await pathExists(path.join(dataDir, "venv")), false);
+	});
+});
+
+await test("remove(): пустое окружение — не ошибка", async () => {
+	const dataDir = await freshDataDir("remove-empty");
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
+		const manager = createLocalEngineManager();
+		const result = await manager.remove();
+		assert.deepEqual(result.removed, []);
+	});
+});
+
+await testNeeds("remove() останавливает работающий сервер", hasPython3, "нет python3 в системе", async () => {
+	const dataDir = await freshDataDir("remove-stops-server");
+	await fakeVenv(dataDir);
+	await makeModels(dataDir);
+	const port = await freePort();
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
+		const manager = createLocalEngineManager({ port, startTimeoutMs: 20_000 });
+		const started = await manager.start(path.join(dataDir, "venv", "bin", "python3"), port);
+		assert.ok(started.pid);
+		await manager.remove();
+		assert.equal(isAlive(started.pid), false, "процесс сервера должен быть убит");
+	});
+});
+
 await test("ensureStarted(): не установлен → понятная ошибка про кнопку «Установить»", async () => {
 	const dataDir = await freshDataDir("ensure-not-installed");
 	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, ...withoutEnv().env } }, async () => {
@@ -787,6 +857,85 @@ await testNeeds("python3 -m py_compile py/server.py проходит", hasPython
 	const res = await runNode("python3", ["-m", "py_compile", SERVER_PY]);
 	assert.equal(res.code, 0, res.err);
 });
+
+/**
+ * Регрессия: faster-whisper 1.2.1 внутри зовёт av.open(..., metadata_errors=...),
+ * а в свежем PyAV параметра нет → «open() got an unexpected keyword argument
+ * 'metadata_errors'». Поэтому server.py декодирует аудио сам и отдаёт модели
+ * numpy-массив. Проверяем ровно этот кусок на любых версиях av.
+ */
+const hasPyDeps = async () => {
+	if (!(await hasPython3())) return false;
+	const res = await runNode(PYTHON, ["-c", "import numpy, av"], { timeout: 30_000 });
+	return res.code === 0;
+};
+
+await testNeeds(
+	"server._decode_audio: WAV → float32 16 кГц моно, без вызова faster-whisper",
+	hasPyDeps, `нет ${PYTHON} с numpy/av (можно указать DSH_TEST_PYTHON=/путь/к/python)`,
+	async () => {
+		const script = `
+import importlib.util, io, struct, sys, wave, math
+spec = importlib.util.spec_from_file_location("srv", ${JSON.stringify(SERVER_PY)})
+srv = importlib.util.module_from_spec(spec); spec.loader.exec_module(srv)
+
+def make_wav(rate, channels=1, secs=0.2):
+    n = int(rate * secs) * channels
+    frames = b"".join(struct.pack("<h", int(9000 * math.sin(2 * math.pi * 440 * i / rate))) for i in range(n))
+    buf = io.BytesIO()
+    w = wave.open(buf, "wb"); w.setnchannels(channels); w.setsampwidth(2); w.setframerate(rate)
+    w.writeframes(frames); w.close()
+    return buf.getvalue()
+
+for label, kw in (("16k mono", {"rate": 16000}), ("8k mono", {"rate": 8000}),
+                  ("44.1k stereo", {"rate": 44100, "channels": 2})):
+    audio = srv._decode_audio(make_wav(**kw))
+    assert audio.dtype.name == "float32", label + ": dtype " + audio.dtype.name
+    assert abs(abs(audio).max()) <= 1.0, label + ": значения вне [-1, 1]"
+    # 0.2 с при 16 кГц = 3200 сэмплов
+    assert abs(audio.size - 3200) <= 160, f"{label}: {audio.size} сэмплов вместо ~3200"
+print("OK")
+`;
+		const res = await runNode(PYTHON, ["-c", script], { timeout: 60_000 });
+		assert.equal(res.code, 0, res.err);
+		assert.match(res.out, /OK/);
+	}
+);
+
+await testNeeds(
+	"server: быстрый whisper-конвейер не зовёт проблемный av.open из faster-whisper",
+	hasPyDeps, `нет ${PYTHON} с numpy/av (можно указать DSH_TEST_PYTHON=/путь/к/python)`,
+	async () => {
+		// Подменяем модель: нас интересует только путь «байты → модель»,
+		// поэтому тяжёлые модели качать не нужно
+		const script = `
+import importlib.util, io, struct, wave, math
+spec = importlib.util.spec_from_file_location("srv", ${JSON.stringify(SERVER_PY)})
+srv = importlib.util.module_from_spec(spec); spec.loader.exec_module(srv)
+
+class FakeSegment:
+    def __init__(self, text): self.text = text
+class FakeModel:
+    def transcribe(self, audio, **kwargs):
+        assert hasattr(audio, "size"), "модель должна получить numpy-массив, а не путь к файлу"
+        assert audio.dtype.name == "float32"
+        assert audio.size == 16000, audio.size
+        return ([FakeSegment(" привет "), FakeSegment(" мир ")], None)
+
+srv._load_whisper = lambda name: FakeModel()
+n = 16000
+frames = b"".join(struct.pack("<h", int(9000 * math.sin(2 * math.pi * 440 * i / n))) for i in range(n))
+buf = io.BytesIO(); w = wave.open(buf, "wb"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(n)
+w.writeframes(frames); w.close()
+text = srv._transcribe(buf.getvalue(), "tiny", "ru")
+assert text == "привет мир", repr(text)
+print("OK")
+`;
+		const res = await runNode(PYTHON, ["-c", script], { timeout: 60_000 });
+		assert.equal(res.code, 0, res.err);
+		assert.match(res.out, /OK/);
+	}
+);
 
 await testNeeds("python3 py/server.py --port <свободный> поднимается и отдаёт 400 на неизвестный голос", hasPython3, "нет python3 в системе", async () => {
 	const dataDir = await freshDataDir("server-direct");

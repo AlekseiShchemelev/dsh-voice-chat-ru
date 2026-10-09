@@ -535,7 +535,16 @@ async function renderLocalBox(statusBody, posts) {
 	box = node.type(node.props);
 	stubX.runEffects();
 	await settle();
-	return box;
+	// Перерисовка того же экземпляра: нужна для проверок с локальным состоянием
+	// блока (например, подтверждение удаления) — состояние живёт в его useState
+	const rerender = async () => {
+		stubX.resume(mark);
+		const next = node.type(node.props);
+		stubX.runEffects();
+		await settle();
+		return next;
+	};
+	return { box, rerender };
 }
 
 const LOCAL_READY = {
@@ -551,7 +560,7 @@ const buttonByText = (tree, re) => {
 };
 
 await test("Блок показывает состояние окружения и кнопки управления", async () => {
-	const box = await renderLocalBox(LOCAL_READY, []);
+	const { box } = await renderLocalBox(LOCAL_READY, []);
 	const text = textOf(box);
 	assert.match(text, /Python/, "Должна быть строка про Python");
 	assert.match(text, /Модели/, "Должна быть строка про модели");
@@ -568,7 +577,7 @@ await test("Блок показывает состояние окружения 
 
 await test("Кнопка «Запустить сервер» дёргает /local/start", async () => {
 	const posts = [];
-	const box = await renderLocalBox(LOCAL_READY, posts);
+	const { box } = await renderLocalBox(LOCAL_READY, posts);
 	await buttonByText(box, /Запустить сервер/).props.onClick();
 	await flush();
 	assert.deepEqual(posts, ["/dsh-voice-chat/local/start"]);
@@ -576,7 +585,7 @@ await test("Кнопка «Запустить сервер» дёргает /loc
 
 await test("Не установленный движок: кнопка установки активна и дёргает /local/install", async () => {
 	const posts = [];
-	const box = await renderLocalBox({
+	const { box } = await renderLocalBox({
 		...LOCAL_READY, venvReady: false, modelsReady: false,
 		error: "Python не найден: установите python3 или задайте DSH_VOICE_PYTHON"
 	}, posts);
@@ -590,7 +599,7 @@ await test("Не установленный движок: кнопка уста�
 });
 
 await test("Идущая установка показывает фазу и блокирует кнопки", async () => {
-	const box = await renderLocalBox({
+	const { box } = await renderLocalBox({
 		...LOCAL_READY, installing: true, installStage: "models", venvReady: false, modelsReady: false
 	}, []);
 	const text = textOf(box);
@@ -602,7 +611,7 @@ await test("Идущая установка показывает фазу и б�
 });
 
 await test("Ошибка установки показывается пользователю", async () => {
-	const box = await renderLocalBox({
+	const { box } = await renderLocalBox({
 		...LOCAL_READY, venvReady: false, modelsReady: false,
 		installError: "Модели не загружены: нет Piper-голоса"
 	}, []);
@@ -610,22 +619,22 @@ await test("Ошибка установки показывается польз�
 });
 
 await test("Показывается различие «venv есть» и «пакеты импортируются»", async () => {
-	const box = await renderLocalBox({
+	const { box } = await renderLocalBox({
 		...LOCAL_READY, depsReady: false, depsError: "No module named 'faster_whisper'"
 	}, []);
 	const text = textOf(box);
 	assert.match(text, /venv есть, но faster-whisper \/ piper-tts не импортируются/);
 	assert.match(text, /No module named 'faster_whisper'/, "причина импорта должна быть видна");
 	// venv нет — строка про импорты не показывается
-	const noVenv = await renderLocalBox({ ...LOCAL_READY, venvReady: false, depsReady: null }, []);
+	const { box: noVenv } = await renderLocalBox({ ...LOCAL_READY, venvReady: false, depsReady: null }, []);
 	assert.match(textOf(noVenv), /venv не создан/);
 	// пакеты на месте — отдельная строка
-	const ok = await renderLocalBox({ ...LOCAL_READY, depsReady: true }, []);
+	const { box: ok } = await renderLocalBox({ ...LOCAL_READY, depsReady: true }, []);
 	assert.match(textOf(ok), /импортируются/);
 });
 
 await test("Причина сбоя и хвост лога установки показываются пользователю", async () => {
-	const box = await renderLocalBox({
+	const { box } = await renderLocalBox({
 		...LOCAL_READY,
 		venvReady: false, modelsReady: false, depsReady: false,
 		installError: "Модели не загружены: нет Piper-голоса ... — urllib.error.URLError: <urlopen error timed out>",
@@ -640,7 +649,7 @@ await test("Причина сбоя и хвост лога установки п
 
 await test("Запущенный сервер: кнопка остановки активна", async () => {
 	const posts = [];
-	const box = await renderLocalBox({
+	const { box } = await renderLocalBox({
 		...LOCAL_READY, serverRunning: true, pid: 4242
 	}, posts);
 	assert.match(textOf(box), /работает на порту 8765 \(pid 4242\)/);
@@ -660,6 +669,43 @@ await test("Голос локального Piper выбирается из сп
 	voice.props.onChange({ target: { value: "ru_RU-denis-medium" } });
 	tree = renderOnce(Section, stub);
 	assert.equal(controlByLabel(tree, "Голос (локальный Piper)").props.value, "ru_RU-denis-medium");
+});
+
+console.log("\nУдаление локального движка");
+await test("Кнопка удаления просит подтверждение и только потом дёргает /local/remove", async () => {
+	const posts = [];
+	const { box, rerender } = await renderLocalBox({ ...LOCAL_READY, hasFiles: true }, posts);
+	const btn = buttonByText(box, /Удалить локальный движок/);
+	assert.ok(btn, "кнопка удаления должна быть, когда на диске есть файлы");
+	assert.equal(btn.props.disabled, false);
+	assert.match(textOf(box), /освобождая обычно 1–3 ГБ/, "предупреждаем о размере");
+	// Первый клик — только вопрос (перерисовываем тот же компонент: состояние живёт в нём)
+	btn.props.onClick();
+	await flush();
+	assert.deepEqual(posts, [], "первый клик ничего не удаляет");
+	const confirmBtn = buttonByText(await rerender(), /Точно удалить/);
+	assert.ok(confirmBtn, "после первого клика кнопка спрашивает подтверждение");
+	await confirmBtn.props.onClick();
+	await flush();
+	assert.deepEqual(posts, ["/dsh-voice-chat/local/remove"], "второй клик удаляет");
+});
+
+await test("Кнопка удаления неактивна, когда на диске ничего нет", async () => {
+	const { box } = await renderLocalBox({ ...LOCAL_READY, hasFiles: false }, []);
+	const btn = buttonByText(box, /Удалить локальный движок/);
+	assert.ok(btn);
+	assert.equal(btn.props.disabled, true, "нечего удалять");
+});
+
+console.log("\nОформление выпадающих списков");
+await test("select получает color-scheme: без него нативный список белый", () => {
+	for (const label of ["Движок ASR", "Движок TTS", "Язык речи"]) {
+		const select = controlByLabel(tree, label);
+		assert.equal(select.type, "select", label);
+		assert.ok(select.props.style.colorScheme === "dark" || select.props.style.colorScheme === "light",
+			label + ": у списка должен быть colorScheme, иначе список белый на тёмном фоне");
+		assert.ok(select.props.style.background, label + ": нужен явный фон поля");
+	}
 });
 
 console.log("\nКлавиша запуска распознавания");

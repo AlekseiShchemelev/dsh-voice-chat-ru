@@ -110,3 +110,18 @@
 3. `LOCAL_ASR_MODELS` / `LOCAL_TTS_VOICES` / `DEFAULT_LOCAL_PORT` в `lib/index.js`,
    тест сверяет их с `py/server.py`, чтобы списки в UI не разошлись с сервером.
 - [x] Этап 10
+
+## Этап 11 — Совместимость faster-whisper со свежим PyAV, удаление движка, тёмные списки
+1. **Регрессия распознавания**: faster-whisper 1.2.1 внутри зовёт
+   `av.open(..., metadata_errors="ignore")`, а в PyAV >=14 такого параметра нет →
+   `TypeError: open() got an unexpected keyword argument 'metadata_errors'` на любой
+   свежей установке. `py/server.py` теперь декодирует аудио сам (`_decode_audio`,
+   float32 16 кГц моно) и отдаёт модели numpy-массив; tempfile-путь убран.
+2. **Язык распознавания** из общей настройки «Язык речи» передаётся в multipart
+   (`language`) — раньше Whisper угадывал и на русской речи давал en.
+3. **Удаление**: `localEngine.remove()` + `POST /local/remove?keepModels=` (останавливает
+   сервер, сносит python/venv/models/logs, сбрасывает кэш проверки зависимостей),
+   `status().hasFiles/installedFiles`, кнопка в UI с двойным подтверждением.
+4. **Оформление списков**: `color-scheme` (light/dark по фону DSH) — нативный выпадающий
+   список больше не белый на тёмном, выбранный вариант видно сразу.
+- [x] Этап 11

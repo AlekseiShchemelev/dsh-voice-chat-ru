@@ -6,7 +6,6 @@ import logging
 import os
 import struct
 import sys
-import tempfile
 import threading
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -77,27 +76,84 @@ def _load_piper(voice_name: str):
         return voice
 
 
-def _transcribe(audio_bytes: bytes, model_name: str, language: str | None) -> str:
+SAMPLE_RATE = 16000
+
+
+def _decode_pcm16_wav(audio_bytes: bytes):
+    """Резервный декодер для чистого PCM-WAV (без av): 16-bit → float32 [-1, 1]."""
     import numpy as np
 
+    with wave.open(io.BytesIO(audio_bytes), "rb") as wav_file:
+        channels = wav_file.getnchannels()
+        width = wav_file.getsampwidth()
+        rate = wav_file.getframerate()
+        frames = wav_file.readframes(wav_file.getnframes())
+    if width != 2:
+        raise ValueError(f"Поддерживается только 16-битный WAV, получено {width * 8} бит")
+    samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+    if channels > 1:
+        samples = samples.reshape(-1, channels).mean(axis=1)
+    if rate != SAMPLE_RATE and samples.size:
+        # Линейная передискретизация: для распознавания точность не критична
+        target_len = max(1, round(samples.size * SAMPLE_RATE / rate))
+        samples = np.interp(
+            np.linspace(0, samples.size - 1, target_len, dtype=np.float64),
+            np.arange(samples.size, dtype=np.float64),
+            samples,
+        ).astype(np.float32)
+    return samples
+
+
+def _decode_audio(audio_bytes: bytes):
+    """Аудио → float32 mono 16 кГц.
+
+    Декодируем сами, а не отдаём файл faster-whisper: в faster-whisper 1.2.1
+    внутренний decode_audio зовёт av.open(..., metadata_errors="ignore"), а в
+    свежем PyAV (>=14) такого параметра больше нет — из-за этого распознавание
+    падало с "open() got an unexpected keyword argument 'metadata_errors'".
+    Ставить av не нужно: для PCM-WAV хватает стандартного wave.
+    """
+    if audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE":
+        try:
+            return _decode_pcm16_wav(audio_bytes)
+        except Exception as exc:  # битый WAV — пробуем универсальный путь
+            logger.warning("WAV-декодер не справился (%s), пробую av", exc)
+
+    import av
+    import numpy as np
+
+    resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
+    chunks = []
+    with av.open(io.BytesIO(audio_bytes)) as container:
+        if not container.streams.audio:
+            raise ValueError("В файле нет аудиодорожки (поддерживаются webm/opus, mp3, wav)")
+        for frame in container.decode(container.streams.audio[0]):
+            for resampled in resampler.resample(frame):
+                chunks.append(resampled.to_ndarray())
+        # Последний фрейм often остаётся в буфере ресемплера — сливаем его
+        for resampled in resampler.resample(None):
+            chunks.append(resampled.to_ndarray())
+    if not chunks:
+        raise ValueError("Не удалось декодировать аудио")
+    samples = np.concatenate(chunks, axis=1).reshape(-1).astype(np.float32) / 32768.0
+    if samples.size == 0:
+        raise ValueError("Аудио пустое")
+    return samples
+
+
+def _transcribe(audio_bytes: bytes, model_name: str, language: str | None) -> str:
     with _whisper_lock:
         model = _load_whisper(model_name)
-
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp.write(audio_bytes)
-            tmp_path = tmp.name
-
-        try:
-            segments, _ = model.transcribe(
-                tmp_path,
-                language=language,
-                beam_size=5,
-                vad_filter=True,
-            )
-            text = " ".join(seg.text.strip() for seg in segments)
-            return text.strip()
-        finally:
-            os.unlink(tmp_path)
+        audio = _decode_audio(audio_bytes)
+        logger.info("Decoded %d samples @ %d Hz", audio.size, SAMPLE_RATE)
+        segments, _ = model.transcribe(
+            audio,
+            language=language,
+            beam_size=5,
+            vad_filter=True,
+        )
+        text = " ".join(seg.text.strip() for seg in segments)
+        return text.strip()
 
 
 def _synthesize(text: str, voice_name: str, speed: float) -> bytes:
