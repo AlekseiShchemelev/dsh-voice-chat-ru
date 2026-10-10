@@ -330,6 +330,39 @@ Chrome отправляет звук на **серверы Google**: в сетя
 - **Офлайн-движок**: `lib/local-engine.js` управляет portable Python (astral-sh/python-build-standalone), venv с faster-whisper и piper-tts, предзагрузкой моделей и дочерним процессом `py/server.py`; сервер — OpenAI-совместимый шимм (`/v1/audio/transcriptions`, `/v1/audio/speech`, `/health`) на стандартной библиотеке Python, поэтому хост общается с ним тем же кодом, что и с облачным движком;
 - **Скорость и язык речи** применяются ко всем движкам: Edge — SSML `rate`, пользовательский TTS — параметр `speed`, локальный и браузерный TTS — параметр скорости synthesis, а для движков без нативной скорости — `audio.playbackRate`.
 
+### 8.1 Устройство кода
+
+```
+lib/shared.js          константы движков и чистые функции (общие для сервера и браузера)
+lib/settings.js        settings.local.json: чтение/запись, нормализация, миграция, разбор config
+lib/net.js             транспорт: исходящие запросы, таймауты, лимиты тел, JSON-ответы
+lib/engines/asr.js     распознавание: multipart и chat-протокол
+lib/engines/tts.js     синтез у внешних движков: OpenAI-совместимый и MiMo
+lib/rewrite.js         разговорный пересказ через LLM harness
+lib/edge-tts.js        синтез через Microsoft Edge TTS
+lib/local-engine.js    менеджер локального Python-движка (faster-whisper + Piper)
+lib/index.js           apply(), HTTP-маршруты и связывание всего вместе
+lib/client.js          браузерная половина — ГЕНЕРИРУЕТСЯ из src/client/*.js
+```
+
+`lib/client.js` нельзя разбить на runtime-модули: хост грузит его как
+`window.__ModuleLoader__.load({factory})`, и `require()` там умеет только
+пакеты из графа — относительные импорты не резолвятся. Поэтому исходник
+разложен по кускам в `src/client/`, а `scripts/build-client.mjs` их склеивает:
+
+```bash
+npm run build:client   # пересобрать lib/client.js из src/client/*
+npm run check:client   # только проверить свежесть, ничего не перезаписывая
+npm test               # 348 тестов, включая проверку свежести сборки
+```
+
+Правку в клиенте всегда завершайте пересборкой: `test/client-build.test.mjs`
+падает на разъезде `src/client/*` и `lib/client.js`, иначе забытая
+пересборка выглядит как «правильный код, но баг есть».
+
+Константы из `lib/shared.js` клиент **не импортирует** и держит копии; паритет
+копий закреплён `test/shared-parity.test.mjs`.
+
 ---
 
 ## 9. Устранение неполадок (FAQ)
