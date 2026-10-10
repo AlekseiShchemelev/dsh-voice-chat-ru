@@ -8,6 +8,7 @@ import re
 import struct
 import sys
 import threading
+import time
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,6 +26,11 @@ DATA_DIR = Path(
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 SUPPORTED_WHISPER_MODELS = {"tiny", "base", "small", "medium", "large-v3"}
+
+# beam_size=5 — это в разы медленнее на CPU, а на живых записях разница в
+# качестве почти незаметна: локальный движок слушает короткие фразы, и задержка
+# важнее. Плагин может прислать своё значение полем beam_size.
+DEFAULT_BEAM_SIZE = 1
 # Голоса по умолчанию. Список НЕ ограничивает выбор: сервер принимает любой голос,
 # который реально лежит в <DATA_DIR>/piper/<имя>/<имя>.onnx — пользователь может
 # докачать украинский или английский голос и выбрать его в настройках.
@@ -36,6 +42,10 @@ SUPPORTED_PIPER_VOICES = {
 }
 # Имя каталога модели: только буквы/цифры/дефис/подчёркивание (защита от ../../)
 VOICE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+class EngineNotInstalledError(RuntimeError):
+    """Локальный движок на месте, но его Python-зависимости не установлены."""
 
 
 class ModelNotDownloadedError(RuntimeError):
@@ -52,20 +62,104 @@ class ModelNotDownloadedError(RuntimeError):
         )
 
 
-def parse_multipart(stream, content_type: str, max_body: int = 256 * 1024 * 1024) -> dict:
+def read_request_body(stream, headers, max_body: int = 256 * 1024 * 1024) -> bytes:
+    """Читает тело запроса ровно настолько, на сколько оно объявлено.
+
+    Ключевое отличие от «прочитать до конца потока»: браузер шлёт multipart
+    через fetch как Transfer-Encoding: chunked и держит соединение живым
+    (keep-alive). Обычный read(n) на сокетном файле ждёт ровно n байт или EOF —
+    и висел вечно: микрофон желтел, запрос не возвращался никогда.
+
+    Разбираем фрейминг честно:
+      * chunked — по заголовкам размера чанков (граница multipart при этом может
+        попасть ровно на стык чанков, и поиск по сырым байтам её теряет);
+      * Content-Length — ровно указанное число байт;
+      * без заголовков — до EOF (HTTP/1.0, соединение закроет клиент).
+    """
+    encoding = (headers.get("Transfer-Encoding") or "").lower()
+    if "chunked" in encoding:
+        chunks = []
+        total = 0
+        while True:
+            line = stream.readline(1024)
+            if not line:
+                break
+            size_text = line.split(b";", 1)[0].strip()
+            try:
+                size = int(size_text, 16)
+            except ValueError:
+                raise ValueError(f"bad chunk size: {size_text!r}")
+            if size == 0:
+                # Завершающий CRLF и возможные трейлеры — до пустой строки
+                while True:
+                    trailer = stream.readline(1024)
+                    if trailer in (b"", b"\r\n", b"\n"):
+                        break
+                break
+            total += size
+            if total > max_body:
+                raise ValueError(f"body exceeds {max_body} bytes")
+            data = stream.read(size)
+            if len(data) != size:
+                break
+            chunks.append(data)
+            # CRLF после данных чанка по RFC обязателен, но на практике
+            # встречаются клиенты, которые его не шлют. peek() смотрит вперёд,
+            # не consuming байты, поэтому вслепую глотать два байта нельзя.
+            head = stream.peek(2)[:2] if hasattr(stream, "peek") else stream.read(2)
+            if head == b"\r\n":
+                stream.read(2)
+        return b"".join(chunks)
+
+    raw_length = headers.get("Content-Length")
+    if raw_length:
+        try:
+            length = int(raw_length)
+        except ValueError:
+            raise ValueError(f"bad Content-Length: {raw_length!r}")
+        if length > max_body:
+            raise ValueError(f"body exceeds {max_body} bytes")
+        parts = []
+        remaining = length
+        read1 = getattr(stream, "read1", None) or stream.read
+        while remaining > 0:
+            chunk = read1(min(65536, remaining))
+            if not chunk:
+                break
+            parts.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(parts)
+
+    return stream.read(max_body)
+
+
+def field_text(value, default: str = "") -> str:
+    """Текстовое поле multipart → строка.
+
+    Наш разбор отдаёт все поля байтами (cgi.FieldStorage отдавал строки), а
+    дальше по коду имена моделей, языков и голосов сравниваются со строками.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace").strip() or default
+    return str(value).strip() or default
+
+
+def parse_multipart(body: bytes, content_type: str) -> dict:
     """Минимальный разбор multipart/form-data → {имя: значение}.
 
     Раньше здесь был `cgi.FieldStorage`, а модуль cgi удалён в Python 3.13 —
-    на системном python3 3.13+ ВСЯ распознавание падало с ImportError (500).
+    на системном python3 3.13+ ВСЁ распознавание падало с ImportError (500).
     Здесь только то, что реально присылает плагин: текстовые поля и один файл.
+
+    Тело приходит уже разобранным из фрейминга (см. read_request_body).
     """
     match = re.search(r'boundary="?([^";]+)"?', content_type)
     if not match:
         raise ValueError("no boundary in Content-Type")
-    boundary = match.group(1).encode()
-    delimiter = b"--" + boundary
+    delimiter = b"--" + match.group(1).encode()
 
-    body = stream.read(max_body)
     fields = {}
     for part in body.split(delimiter):
         if part in (b"", b"--", b"--\r\n", b"\r\n"):
@@ -118,11 +212,21 @@ def _load_whisper(model_name: str):
     # выбранная в настройках medium/tiny молча игнорировалась.
     if model_name in _whisper_models:
         return _whisper_models[model_name]
-    from faster_whisper import WhisperModel
 
+    # Сначала проверка наличия модели, потом импорт: иначе на машине без
+    # faster_whisper пользователь получал 500 «No module named 'faster_whisper'»
+    # вместо понятного 409 «модель не скачана, нажмите кнопку установки».
     available = _downloaded_whisper_models()
     if model_name not in available:
         raise ModelNotDownloadedError(model_name, sorted(available))
+
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as err:
+        raise EngineNotInstalledError(
+            "faster-whisper не установлен. Откройте Настройки DSH → голосовой чат "
+            "и нажмите «Установить локальный движок»."
+        ) from err
 
     logger.info("Loading faster-whisper model: %s", model_name)
     model = WhisperModel(
@@ -224,17 +328,30 @@ def _decode_audio(audio_bytes: bytes):
     return samples
 
 
-def _transcribe(audio_bytes: bytes, model_name: str, language: str | None) -> str:
+def _transcribe(audio_bytes: bytes, model_name: str, language: str | None,
+                beam_size: int | None = None) -> str:
     with _whisper_lock:
+        load_started = time.monotonic()
         model = _load_whisper(model_name)
+        load_seconds = time.monotonic() - load_started
         audio = _decode_audio(audio_bytes)
         logger.info("Decoded %d samples @ %d Hz", audio.size, SAMPLE_RATE)
+        if load_seconds > 1:
+            # Первая загрузка модели — обычно 5–30 с. Без этого в логе не видно,
+            # что «подвисание» — это не зависание, а чтение весов с диска.
+            logger.info("Model %s loaded in %.1f s", model_name, load_seconds)
+        started = time.monotonic()
         segments, _ = model.transcribe(
             audio,
             language=language,
-            beam_size=5,
+            beam_size=beam_size if beam_size and beam_size > 0 else DEFAULT_BEAM_SIZE,
             vad_filter=True,
+            # Без этого whisper на коротких ответах способен «зациклиться» и
+            # дописать начало фразы в конец.
+            condition_on_previous_text=False,
         )
+        logger.info("Transcribed %.1f s of audio in %.1f s",
+                    audio.size / SAMPLE_RATE, time.monotonic() - started)
         text = " ".join(seg.text.strip() for seg in segments)
         return text.strip()
 
@@ -306,7 +423,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            form = parse_multipart(self.rfile, content_type)
+            body = read_request_body(self.rfile, self.headers)
+            form = parse_multipart(body, content_type)
         except ValueError as e:
             self._send_json(400, {"error": f"cannot parse multipart: {e}"})
             return
@@ -317,21 +435,28 @@ class Handler(BaseHTTPRequestHandler):
 
         audio_bytes = form["file"]
 
-        model_name = form.get("model", "small")
+        # Текстовые поля приходят из multipart байтами: cgi.FieldStorage отдавал их
+        # строками, наш парсер — сырыми. Без декодирования `model` не совпал бы
+        # со списком поддерживаемых и давал 400 «unsupported model: b'small'».
+        model_name = field_text(form.get("model"), "small")
         if model_name not in SUPPORTED_WHISPER_MODELS:
             self._send_json(400, {"error": f"unsupported model: {model_name}"})
             return
 
-        language = form.get("language", None)
-        if language == "":
-            language = None
+        language = field_text(form.get("language"), "") or None
 
         try:
-            text = _transcribe(audio_bytes, model_name, language)
+            text = _transcribe(
+            audio_bytes, model_name, language,
+            beam_size=field_text(form.get("beam_size"), ""),
+        )
             self._send_json(200, {"text": text})
         except ModelNotDownloadedError as e:
             # 409: не 500 — модель не скачана, это исправляемое состояние, а не сбой
             self._send_json(409, {"error": str(e), "model": model_name, "downloaded": e.available})
+        except EngineNotInstalledError as e:
+            # Тоже исправляемое состояние (не установлены зависимости), не сбой
+            self._send_json(409, {"error": str(e), "model": model_name})
         except Exception as e:
             logger.exception("Transcription failed")
             self._send_json(500, {"error": str(e)})
