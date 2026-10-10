@@ -1,6 +1,6 @@
 {
   "name": "dsh-voice-chat",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Русский форк плагина голосового чата для DSH: кнопка микрофона → речь в текст → автоотправка, ответы AI озвучиваются. ASR: SiliconFlow / Groq / MiMo / OpenAI-совместимый / браузер / локальный faster-whisper. TTS: Edge / MiMo / OpenAI-совместимый / браузер / локальный Piper. Постоянный диалог, скорость и язык речи.",
   "repository": {
     "type": "git",
@@ -25,7 +25,7 @@
     "test:live": "node test/live-dialog.test.mjs",
     "diagnose:tts": "node test/diagnose-tts.mjs",
     "test:shared": "node test/shared-parity.test.mjs",
-    "test:py": "python3 test/py-server-multipart.test.py"
+    "test:py": "python3 test/py-server-multipart.test.py && python3 test/py-piper-compat.test.py"
   },
   "exports": {
     ".": {

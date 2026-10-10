@@ -406,6 +406,68 @@ await test("ensureStarted(portA) затем ensureStarted(portB): второй �
 	});
 });
 
+console.log("\nГонка запуска: параллельные /stt и /speak не убивают сервер друг друга");
+
+await test("параллельные ensureStarted() поднимают ОДИН процесс и не убивают его", async () => {
+	// Регресс, из-за которого озвучка падала с ECONNRESET: /stt и /speak приходят
+	// внахлёст (в постоянном диалоге — постоянно), оба видели child === null,
+	// и второй убивал сервер, только что поднятый первым. В логе пользователя
+	// было «сервер остановлен (сигнал SIGTERM)», а идущий запрос — ECONNRESET.
+	const dataDir = await freshDataDir("race");
+	const port = await freePort();
+	const venv = await fakeVenv(dataDir, {
+		body: [`exec ${process.execPath} -e 'require("node:http").createServer((q,s)=>{s.writeHead(200,{"Content-Type":"application/json"});s.end("{}")}).listen(${port},"127.0.0.1")'`]
+	});
+	await withEnv({ DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: undefined }, async () => {
+		const m = createLocalEngineManager({ port, startTimeoutMs: 15_000, healthPollIntervalMs: 50 });
+		const results = await Promise.all([
+			m.ensureStarted(port),
+			m.ensureStarted(port),
+			m.ensureStarted(port),
+			m.ensureStarted(port)
+		]);
+		const pids = new Set(results.map((r) => r.pid).filter(Boolean));
+		assert.equal(pids.size, 1, "параллельные вызовы должны вернуть один и тот же pid, а не разные процессы: " + [...pids]);
+		const pid = [...pids][0];
+		PROCS.add(pid);
+
+		// Сервер обязан ЖИТЬ после всех четырёх вызовов
+		assert.ok(await waitHealth(port), "сервер не должен быть убит собственными же вызовами");
+		const alive = (await m.status()).serverRunning;
+		assert.equal(alive, true, "после параллельных ensureStarted сервер обязан остаться запущенным");
+
+		await m.stop();
+		PROCS.delete(pid);
+	});
+});
+
+await test("неудачный запуск не убивает сервер, поднятый параллельным вызовом", async () => {
+	// Второй дефект той же гонки: в catch упавшего start() стоял stop(), который
+	// гасил «текущий child» — а к тому моменту это уже мог быть чужой процесс.
+	const dataDir = await freshDataDir("race-foreign");
+	const good = await freePort();
+	const dead = await freePort();
+	const venv = await fakeVenv(dataDir, {
+		body: [`exec ${process.execPath} -e 'require("node:http").createServer((q,s)=>{s.writeHead(200,{"Content-Type":"application/json"});s.end("{}")}).listen(${good},"127.0.0.1")'`]
+	});
+	await withEnv({ DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: undefined }, async () => {
+		const m = createLocalEngineManager({ port: good, startTimeoutMs: 2_000, healthPollIntervalMs: 50 });
+		const started = await m.ensureStarted(good);
+		PROCS.add(started.pid);
+
+		// Порт, который никто не слушает и наш битый интерпретатор не поднимет
+		await assert.rejects(
+			() => m.ensureStarted(dead),
+			(err) => err instanceof Error,
+			"заведомо неуспешный запуск должен упасть"
+		);
+
+		assert.ok(await waitHealth(good), "работающий сервер должен уцелеть после неудачного запуска на другом порту");
+		await m.stop();
+		PROCS.delete(started.pid);
+	});
+});
+
 await test("start() без интерпретатора venv: ошибка со статусом 400", async () => {
 	const dataDir = await freshDataDir("start-status-400");
 	await withEnv({ DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: undefined, PATH: "" }, async () => {

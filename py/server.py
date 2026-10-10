@@ -187,7 +187,11 @@ def parse_multipart(body: bytes, content_type: str) -> dict:
 _whisper_models = {}
 _whisper_lock = threading.Lock()
 _piper_voices = {}
-_piper_lock = threading.Lock()
+# Именно RLock, а не Lock: _synthesize() держит блокировку и внутри вызывает
+# _load_piper(), который берёт её же. Обычный threading.Lock не реентерабелен —
+# первая же озвучка Piper намертво зависала (поток ждал сам себя), и запрос
+# /v1/audio/speech не возвращался никогда. Это был deadlock с v0.5.0.
+_piper_lock = threading.RLock()
 
 # Модели, физически лежащие на диске (снапшоты faster-whisper раскладываются как
 # models--<org>--faster-whisper-<size>). Нужны, чтобы НЕ скачивать гигабайты прямо
@@ -257,7 +261,11 @@ def _load_piper(voice_name: str):
             )
 
         logger.info("Loading Piper voice: %s", voice_name)
-        voice = PiperVoice.load(str(model_path), config_path=str(config_path), use_cuda=False)
+        try:
+            voice = PiperVoice.load(str(model_path), config_path=str(config_path), use_cuda=False)
+        except TypeError:
+            # В некоторых сборках piper-tts ключа use_cuda нет
+            voice = PiperVoice.load(str(model_path), config_path=str(config_path))
         _piper_voices[voice_name] = voice
         logger.info("Piper voice loaded: %s", voice_name)
         return voice
@@ -356,23 +364,82 @@ def _transcribe(audio_bytes: bytes, model_name: str, language: str | None,
         return text.strip()
 
 
-def _synthesize(text: str, voice_name: str, speed: float) -> bytes:
-    import numpy as np
+def _synthesis_config(length_scale: float):
+    """Конфиг синтеза для piper-tts >= 1.3 (в 1.2 его не было вовсе)."""
+    try:
+        from piper import SynthesisConfig
+    except ImportError:
+        return None
+    try:
+        return SynthesisConfig(length_scale=length_scale)
+    except TypeError:
+        # Неизвестная сигнатура — синтезируем с настройками по умолчанию,
+        # лучше потерять скорость речи, чем синтез целиком.
+        logger.warning("SynthesisConfig не принимает length_scale, скорость не применяется")
+        return None
 
+
+def _iter_pcm(voice, text: str, length_scale: float):
+    """Отдаёт сырые байты PCM int16 одинаково для обеих веток API Piper.
+
+    piper-tts переписали в 1.3 (ветка piper1-gpl, актуальная версия 1.8.x):
+      * synth() отдаёт объекты AudioChunk с .audio_int16_bytes, а скорость
+        задаётся объектом SynthesisConfig;
+      * метод synthesize_stream_raw(), на котором держался прежний код,
+        УБРАН. При установленном свежем Piper он давал
+        AttributeError → 500 → озвучка молча пропадала.
+    Старый API (1.2) отдаёт из synth() просто bytes.
+    """
+    if hasattr(voice, "synthesize"):
+        syn_config = _synthesis_config(length_scale)
+        try:
+            chunks = voice.synthesize(text, syn_config=syn_config) if syn_config is not None \
+                else voice.synthesize(text)
+        except TypeError:
+            # 1.2: synth(text, length_scale=...)
+            chunks = voice.synthesize(text, length_scale=length_scale)
+        for chunk in chunks:
+            if isinstance(chunk, (bytes, bytearray)):
+                yield bytes(chunk)
+                continue
+            pcm = getattr(chunk, "audio_int16_bytes", None)
+            if pcm is None:
+                array = getattr(chunk, "audio_int16_array", None)
+                if array is None:
+                    raise TypeError(f"непонятный чанк синтеза Piper: {type(chunk)!r}")
+                pcm = array.tobytes()
+            yield bytes(pcm)
+        return
+
+    # Совсем старая ветка API — единственный метод с raw-байтами
+    for chunk in voice.synthesize_stream_raw(text, length_scale=length_scale):
+        yield bytes(chunk)
+
+
+def _synthesize(text: str, voice_name: str, speed: float) -> bytes:
     with _piper_lock:
         voice = _load_piper(voice_name)
         length_scale = 1.0 / speed if speed > 0 else 1.0
 
         wav_buf = io.BytesIO()
         with wave.open(wav_buf, "wb") as wav_file:
+            # Формат WAV задаём ДО записи: иначе при нулевом числе чанков
+            # wave.close() падает с «channels not specified» вместо внятного
+            # «Piper вернул пустое аудио».
             wav_file.setnchannels(1)
             wav_file.setsampwidth(2)
             wav_file.setframerate(voice.config.sample_rate)
+            for pcm in _iter_pcm(voice, text, length_scale):
+                wav_file.writeframes(pcm)
 
-            for audio_bytes in voice.synthesize_stream_raw(text, length_scale=length_scale):
-                wav_file.writeframes(audio_bytes)
-
-        return wav_buf.getvalue()
+        data = wav_buf.getvalue()
+        # Проверяем, что это действительно WAV с данными: иначе браузер получает
+        # «файл» без звука и озвучка выглядит как «ничего не играет».
+        if len(data) <= 44:
+            raise RuntimeError(
+                f"Piper вернул пустое аудио ({len(data)} байт) для голоса {voice_name}"
+            )
+        return data
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -447,9 +514,9 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             text = _transcribe(
-            audio_bytes, model_name, language,
-            beam_size=field_text(form.get("beam_size"), ""),
-        )
+                audio_bytes, model_name, language,
+                beam_size=field_text(form.get("beam_size"), ""),
+            )
             self._send_json(200, {"text": text})
         except ModelNotDownloadedError as e:
             # 409: не 500 — модель не скачана, это исправляемое состояние, а не сбой
