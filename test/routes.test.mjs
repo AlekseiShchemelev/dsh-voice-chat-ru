@@ -31,6 +31,8 @@ async function test(name, fn) {
 
 const TMP_ROOT = await mkdtemp(path.join(os.tmpdir(), "dsh-vc-routes-"));
 process.env.DSH_VOICE_DATA_DIR = TMP_ROOT;
+// Настройки — во временный файл: боевой settings.local.json тест трогать не должен
+process.env.DSH_VOICE_SETTINGS_FILE = path.join(TMP_ROOT, "settings.local.json");
 
 // Настоящий local-engine подключается лениво: ensureStarted на занятом порту
 // лишь опрашивает /health и ничего не поднимает, поэтому Python в тесте не нужен.

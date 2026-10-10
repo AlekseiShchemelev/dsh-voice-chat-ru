@@ -37,27 +37,104 @@ SUPPORTED_PIPER_VOICES = {
 # Имя каталога модели: только буквы/цифры/дефис/подчёркивание (защита от ../../)
 VOICE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
-_whisper_model = None
+
+class ModelNotDownloadedError(RuntimeError):
+    """Запрошенная модель faster-whisper не скачана (и качать её на лету нельзя)."""
+
+    def __init__(self, model_name: str, available):
+        self.model_name = model_name
+        self.available = available
+        have = ", ".join(available) if available else "ни одной"
+        super().__init__(
+            f"Модель faster-whisper «{model_name}» не скачана. "
+            f"Скачана: {have}. Откройте Настройки DSH → голосовой чат → «Локальный» "
+            f"и нажмите «Скачать модель»."
+        )
+
+
+def parse_multipart(stream, content_type: str, max_body: int = 256 * 1024 * 1024) -> dict:
+    """Минимальный разбор multipart/form-data → {имя: значение}.
+
+    Раньше здесь был `cgi.FieldStorage`, а модуль cgi удалён в Python 3.13 —
+    на системном python3 3.13+ ВСЯ распознавание падало с ImportError (500).
+    Здесь только то, что реально присылает плагин: текстовые поля и один файл.
+    """
+    match = re.search(r'boundary="?([^";]+)"?', content_type)
+    if not match:
+        raise ValueError("no boundary in Content-Type")
+    boundary = match.group(1).encode()
+    delimiter = b"--" + boundary
+
+    body = stream.read(max_body)
+    fields = {}
+    for part in body.split(delimiter):
+        if part in (b"", b"--", b"--\r\n", b"\r\n"):
+            continue
+        part = part.lstrip(b"\r\n")
+        if part.startswith(b"--"):
+            continue
+        head, sep, data = part.partition(b"\r\n\r\n")
+        if not sep:
+            continue
+        if data.endswith(b"\r\n"):
+            data = data[:-2]
+        name = None
+        for line in head.split(b"\r\n"):
+            decoded = line.decode("utf-8", "replace")
+            if decoded.lower().startswith("content-disposition"):
+                found = re.search(r'name="([^"]*)"', decoded)
+                if found:
+                    name = found.group(1)
+        if name:
+            fields[name] = data
+    return fields
+
+
+_whisper_models = {}
 _whisper_lock = threading.Lock()
 _piper_voices = {}
 _piper_lock = threading.Lock()
 
+# Модели, физически лежащие на диске (снапшоты faster-whisper раскладываются как
+# models--<org>--faster-whisper-<size>). Нужны, чтобы НЕ скачивать гигабайты прямо
+# на запрос: раньше WhisperModel() умел докачать сам, и /stt молча висел на загрузке
+# (или падал 500 без сети), хотя плагин уже показывал «модель установлена».
+def _downloaded_whisper_models() -> set:
+    found = set()
+    try:
+        for entry in DATA_DIR.iterdir():
+            if entry.is_dir() and entry.name.startswith("models--") and "whisper" in entry.name:
+                for size in SUPPORTED_WHISPER_MODELS:
+                    if entry.name.endswith("-" + size):
+                        found.add(size)
+    except OSError:
+        pass
+    return found
+
 
 def _load_whisper(model_name: str):
-    global _whisper_model
-    if _whisper_model is not None:
-        return _whisper_model
+    # Кэш ПО ИМЕНИ: раньше был один глобальный _whisper_model, и первая же загрузка
+    # (обычно small) навсегда определяла модель для всех последующих запросов —
+    # выбранная в настройках medium/tiny молча игнорировалась.
+    if model_name in _whisper_models:
+        return _whisper_models[model_name]
     from faster_whisper import WhisperModel
 
+    available = _downloaded_whisper_models()
+    if model_name not in available:
+        raise ModelNotDownloadedError(model_name, sorted(available))
+
     logger.info("Loading faster-whisper model: %s", model_name)
-    _whisper_model = WhisperModel(
+    model = WhisperModel(
         model_name,
         device="auto",
         compute_type="auto",
         download_root=str(DATA_DIR),
+        local_files_only=True,
     )
     logger.info("faster-whisper model loaded: %s", model_name)
-    return _whisper_model
+    _whisper_models[model_name] = model
+    return model
 
 
 def _load_piper(voice_name: str):
@@ -198,9 +275,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "status": "ok",
                 "models": {
-                    "whisper": list(SUPPORTED_WHISPER_MODELS),
+                    "whisper": sorted(_downloaded_whisper_models()),
                     "piper": list(SUPPORTED_PIPER_VOICES),
                 },
+            })
+        elif self.path in ("/v1/models", "/models"):
+            # То, что ждёт любой OpenAI-совместимый клиент: что реально доступно
+            self._send_json(200, {
+                "object": "list",
+                "data": [
+                    {"id": f"whisper-{m}", "object": "model", "owned_by": "faster-whisper"}
+                    for m in sorted(_downloaded_whisper_models())
+                ],
             })
         else:
             self._send_json(404, {"error": "not found"})
@@ -214,38 +300,38 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "not found"})
 
     def _handle_transcription(self):
-        import cgi
-
         content_type = self.headers.get("Content-Type", "")
         if "multipart/form-data" not in content_type:
             self._send_json(400, {"error": "expected multipart/form-data"})
             return
 
-        form = cgi.FieldStorage(
-            fp=self.rfile,
-            headers=self.headers,
-            environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type},
-        )
+        try:
+            form = parse_multipart(self.rfile, content_type)
+        except ValueError as e:
+            self._send_json(400, {"error": f"cannot parse multipart: {e}"})
+            return
 
         if "file" not in form:
             self._send_json(400, {"error": "missing 'file' field"})
             return
 
-        file_item = form["file"]
-        audio_bytes = file_item.file.read()
+        audio_bytes = form["file"]
 
-        model_name = form.getfirst("model", "small")
+        model_name = form.get("model", "small")
         if model_name not in SUPPORTED_WHISPER_MODELS:
             self._send_json(400, {"error": f"unsupported model: {model_name}"})
             return
 
-        language = form.getfirst("language", None)
+        language = form.get("language", None)
         if language == "":
             language = None
 
         try:
             text = _transcribe(audio_bytes, model_name, language)
             self._send_json(200, {"text": text})
+        except ModelNotDownloadedError as e:
+            # 409: не 500 — модель не скачана, это исправляемое состояние, а не сбой
+            self._send_json(409, {"error": str(e), "model": model_name, "downloaded": e.available})
         except Exception as e:
             logger.exception("Transcription failed")
             self._send_json(500, {"error": str(e)})

@@ -785,7 +785,12 @@ await testAsync("transcribe: язык из настроек уходит в фо
 test("resolveAsrConfig берёт язык из общих настроек речи (ru-RU → ru)", () => {
 	assert.equal(resolveAsrConfig({}, { asrEngine: "local", speechLang: "ru-RU" }).language, "ru");
 	assert.equal(resolveAsrConfig({}, { asrEngine: "local", speechLang: "zh-CN" }).language, "zh");
-	assert.equal(resolveAsrConfig({}, { asrEngine: "local" }).language, "", "язык не задан → автоопределение");
+	// Язык не задан → берётся тот же дефолт, который отдаёт publicSettings.
+	// Раньше здесь было "", и faster-whisper угадывал язык сам: на русской речи
+	// стабильно определял en (это была реальная жалоба «распознавание не работает»).
+	assert.equal(resolveAsrConfig({}, { asrEngine: "local" }).language, "ru",
+		"без явного языка — дефолт ru-RU, а не пустая строка");
+	assert.equal(resolveAsrConfig({}, { asrEngine: "local", speechLang: null }).language, "ru");
 });
 
 await testAsync("transcribe: engine=browser без apiKey всё ещё 400 (не наш локальный движок)", async () => {

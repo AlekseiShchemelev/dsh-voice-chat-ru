@@ -1,21 +1,23 @@
 /**
  * 宿主路由端到端冒烟测试：真的走一遍 apply() 注册的 /settings 路由
  * （GET 回显按引擎分槽、POST 保存只动当前引擎的槽、其它引擎原样保留）。
- * 会写一次插件目录里的 settings.local.json，跑完自动还原。
+ * Настройки пишутся во временный файл (DSH_VOICE_SETTINGS_FILE) — боевой
+ * settings.local.json не трогаем.
  * 运行：node test/host-smoke.mjs
  */
 import assert from "node:assert/strict";
-import { readFile, writeFile, rm } from "node:fs/promises";
+import { readFile, mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { apply } from "../lib/index.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const SETTINGS_FILE = path.join(HERE, "..", "settings.local.json");
+const SETTINGS_DIR = await mkdtemp(path.join(os.tmpdir(), "dsh-vc-smoke-"));
+const SETTINGS_FILE = path.join(SETTINGS_DIR, "settings.local.json");
+process.env.DSH_VOICE_SETTINGS_FILE = SETTINGS_FILE;
+const { apply } = await import("../lib/index.js");
+
 const pkgVersion = JSON.parse(await readFile(path.join(HERE, "..", "package.json"), "utf8")).version;
-// 先把现有设置挪走，让断言只看"默认值 + 本测试写入的值"，跑完还原
-const original = await readFile(SETTINGS_FILE, "utf8").catch(() => null);
-await rm(SETTINGS_FILE, { force: true });
 
 let passed = 0;
 function check(name, fn) {
@@ -176,8 +178,7 @@ try {
 		assert.doesNotMatch(err, /Base URL/, "不应再因为空 Base URL 直接失败");
 	});
 } finally {
-	if (original === null) await rm(SETTINGS_FILE, { force: true });
-	else await writeFile(SETTINGS_FILE, original, "utf8");
+	await rm(SETTINGS_DIR, { recursive: true, force: true });
 }
 
-console.log(`\n${passed} 项通过${process.exitCode ? "（存在失败）" : ""}（settings.local.json 已还原）`);
+console.log(`\n${passed} 项通过${process.exitCode ? "（存在失败）" : ""}（настройки — во временном файле）`);

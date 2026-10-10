@@ -1,6 +1,6 @@
 {
   "name": "dsh-voice-chat",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Русский форк плагина голосового чата для DSH: кнопка микрофона → речь в текст → автоотправка, ответы AI озвучиваются. ASR: SiliconFlow / Groq / MiMo / OpenAI-совместимый / браузер / локальный faster-whisper. TTS: Edge / MiMo / OpenAI-совместимый / браузер / локальный Piper. Постоянный диалог, скорость и язык речи.",
   "repository": {
     "type": "git",
@@ -13,13 +13,16 @@
   "type": "module",
   "main": "lib/index.js",
   "scripts": {
-    "test": "node test/settings.test.mjs && node test/client-settings.test.mjs && node test/host-smoke.mjs && node test/index-unit.test.mjs && node test/local-engine.test.mjs && node test/routes.test.mjs && node test/live-dialog.test.mjs",
+    "test": "node test/settings.test.mjs && node test/client-settings.test.mjs && node test/client-regressions.test.mjs && node test/host-smoke.mjs && node test/shared-parity.test.mjs && node test/index-unit.test.mjs && node test/local-engine.test.mjs && node test/local-model-selection.test.mjs && node test/routes.test.mjs && node test/host-routes.test.mjs && node test/live-dialog.test.mjs",
     "test:routes": "node test/routes.test.mjs",
     "test:settings": "node test/settings.test.mjs && node test/client-settings.test.mjs && node test/host-smoke.mjs",
+    "test:client": "node test/client-settings.test.mjs && node test/client-regressions.test.mjs",
+    "test:regressions": "node test/client-regressions.test.mjs",
     "test:unit": "node test/index-unit.test.mjs",
-    "test:local": "node test/local-engine.test.mjs",
+    "test:local": "node test/local-engine.test.mjs && node test/local-model-selection.test.mjs",
     "test:live": "node test/live-dialog.test.mjs",
-    "diagnose:tts": "node test/diagnose-tts.mjs"
+    "diagnose:tts": "node test/diagnose-tts.mjs",
+    "test:shared": "node test/shared-parity.test.mjs"
   },
   "exports": {
     ".": {

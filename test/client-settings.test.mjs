@@ -53,6 +53,12 @@ function createReactStub() {
 		/** Текущая позиция курсора хуков — чтобы продолжать нумерацию после формы. */
 		hookCursor() { return cursor; },
 		resume(at) { cursor = at; },
+		/** Отрисовать вложенный компонент с отдельной нумерацией хуков. */
+		subRender(fn) {
+			const saved = cursor;
+			cursor = 0;
+			try { return fn(); } finally { cursor = saved; }
+		},
 		runEffects() {
 			for (const entry of effects) {
 				if (!entry || !entry.pending) continue;
@@ -211,6 +217,29 @@ const Section = await loadSettingsSection(stub, fetchImpl);
 
 const flush = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
 
+/**
+ * Раскрыть вложенные функциональные компоненты в дерево.
+ * Нужно, потому что блоки вроде BrowserAsrCheckBlock — настоящие компоненты
+ * (раньше они были вложенными ВЫЗЫВАМИ функций, что ломало правила хуков React
+ * и давало error #310 с серым экраном настроек) и в дереве видны как узлы-компоненты.
+ */
+function expandComponents(el, stubX, depth = 0) {
+	if (!el || typeof el !== "object" || depth > 8) return el;
+	if (typeof el.type === "function") {
+		// Узел-компонент СОХРАНЯЕМ (по нему тесты находят блоки по имени),
+		// а его children заменяем на результат отрисовки.
+		let rendered = el;
+		let guard = 0;
+		while (rendered && typeof rendered === "object" && typeof rendered.type === "function" && guard++ < 8) {
+			rendered = stubX.subRender(() => rendered.type(rendered.props));
+		}
+		stubX.runEffects();
+		const inner = rendered && typeof rendered === "object" ? expandComponents(rendered, stubX, depth + 1) : [];
+		return { type: el.type, props: el.props, children: [inner] };
+	}
+	return { ...el, children: (el.children || []).map((c) => expandComponents(c, stubX, depth + 1)) };
+}
+
 /** 渲染一次：先调用注册的包装组件，再展开它里面的函数组件（本测试用不上真正的调度）。 */
 function renderOnce(SectionFn, stubX) {
 	stubX.beginRender();
@@ -219,6 +248,7 @@ function renderOnce(SectionFn, stubX) {
 		el = el.type(el.props);
 	}
 	stubX.runEffects();
+	el = expandComponents(el, stubX);
 	return el;
 }
 
