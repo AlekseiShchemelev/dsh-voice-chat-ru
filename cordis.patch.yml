@@ -1,8 +1,8 @@
-# dsh-voice-chat 组合包补丁：把语音对话插件行插入 profile。
-# 宿主半身加载 dsh-voice-chat 包；浏览器半身由 dsh.client + exports["./client"] 自动发现。
+# Патч сборки dsh-voice-chat: вставляет строку плагина голосового диалога в профиль.
+# Хост грузит половину пакета dsh-voice-chat; браузерная половина находится автоматически через dsh.client + exports["./client"].
 #
-# ⚙️ 配置方法：在【你自己的 profile 配置文件】里按 id 覆盖本行 config，例如
-#   编辑 ~/.dsh/profiles/web/cordis.patch.yml，追加：
+# ⚙️ Как настроить: в【своём файле конфигурации профиля】переопредели эту строку config по id, например
+#   отредактируйте ~/.dsh/profiles/web/cordis.patch.yml и допишите:
 #
 #   - id: dsh-voice-chat
 #     name: 'dsh-voice-chat'

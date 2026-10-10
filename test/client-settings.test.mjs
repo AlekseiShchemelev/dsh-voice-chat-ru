@@ -1,7 +1,7 @@
 /**
- * 浏览器端设置表单自测：用极简 React 桩渲染 VoiceChatSettingsSection，
- * 验证"切 TTS 引擎时表单只显示该引擎自己的槽、保存只提交该引擎的槽"。
- * 运行：node test/client-settings.test.mjs
+ * Самотест формы настроек в браузере: рендерим VoiceChatSettingsSection минимальной заглушкой React
+ * и проверяем, что «при смене движка TTS форма показывает только слоты этого движка, а сохранение отправляет только их».
+ * Запуск: node test/client-settings.test.mjs
  */
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_SRC = path.join(HERE, "..", "lib", "client.js");
 
-// ---------- 极简 React 桩（useState/useEffect/useRef/createElement 足够渲染本表单） ----------
+// ---------- Минимальная заглушка React (хватает useState/useEffect/useRef/createElement для отрисовки этой формы) ----------
 function createReactStub() {
 	const states = [];
 	const refs = [];
@@ -69,7 +69,7 @@ function createReactStub() {
 	};
 }
 
-/** 加载 lib/client.js，拿到它注册到 settings.section 的组件。 */
+/** Загружает lib/client.js и достаёт компонент, который он регистрирует в settings.section. */
 async function loadSettingsSection(reactStub, fetchImpl) {
 	const src = await readFile(CLIENT_SRC, "utf8");
 	let captured = null;
@@ -84,13 +84,13 @@ async function loadSettingsSection(reactStub, fetchImpl) {
 		removeEventListener: () => {},
 		__ModuleLoader__: { load(spec) { captured = spec; } }
 	};
-	// 用 Function 构造出浏览器风格环境，执行 IIFE 风格的 client.js
+	// Через Function собираем окружение в браузерном стиле и выполняем client.js, написанный как IIFE
 	const fn = new Function(
 		"window", "console", "navigator", "setTimeout", "clearTimeout", "URL",
 		src
 	);
 	fn(windowStub, console, { mediaDevices: {} }, () => 0, () => {}, URL);
-	assert.ok(captured && typeof captured.factory === "function", "client.js 应通过 __ModuleLoader__.load 注册 factory");
+	assert.ok(captured && typeof captured.factory === "function", "client.js должен зарегистрировать factory через __ModuleLoader__.load");
 	const requireStub = (name) => {
 		if (name === "react") return reactStub.React;
 		throw new Error("unexpected require: " + name);
@@ -110,11 +110,11 @@ async function loadSettingsSection(reactStub, fetchImpl) {
 		get: (name) => (name === "slots" ? fakeSlots : undefined),
 		inject: (deps, fn) => fn({ slots: fakeSlots, modelDirectories: null })
 	});
-	assert.equal(typeof registered["settings.section"], "function", "应注册 settings.section 组件");
+	assert.equal(typeof registered["settings.section"], "function", "компонент settings.section должен быть зарегистрирован");
 	return registered["settings.section"];
 }
 
-// ---------- 元素树工具 ----------
+// ---------- Утилиты обхода дерева элементов ----------
 function walk(node, visit) {
 	if (!node || typeof node !== "object") return;
 	visit(node);
@@ -125,7 +125,7 @@ function textOf(node) {
 	if (!node || typeof node !== "object") return "";
 	return (node.children || []).map(textOf).join("");
 }
-/** 找到 field(label, control) 渲染出的控件，返回它的 props。 */
+/** Находит контрол, отрисованный полем field(label, control), и возвращает его props. */
 function controlByLabel(tree, labelText) {
 	let found = null;
 	walk(tree, (node) => {
@@ -160,14 +160,14 @@ function assertNoField(tree, labelText) {
 	})();
 	assert.equal(found, null, `поле «${labelText}» должно быть скрыто`);
 }
-/** 找到某个 select/input 的 onChange 回调。 */
+/** Находит обработчик onChange у заданного select/input. */
 function onChangeOf(tree, labelText) {
 	const control = controlByLabel(tree, labelText);
 	assert.equal(typeof control.props.onChange, "function", `Поле «${labelText}» должно иметь onChange`);
 	return control.props.onChange;
 }
 
-// 新版宿主 /settings 回显：每引擎一份槽
+// Ответ нового хоста /settings: по одному слоту на каждый движок
 const HOST_SETTINGS = {
 	version: "0.4.0",
 	asrEngine: "custom",
@@ -240,7 +240,7 @@ function expandComponents(el, stubX, depth = 0) {
 	return { ...el, children: (el.children || []).map((c) => expandComponents(c, stubX, depth + 1)) };
 }
 
-/** 渲染一次：先调用注册的包装组件，再展开它里面的函数组件（本测试用不上真正的调度）。 */
+/** Один проход отрисовки: сначала вызываем зарегистрированную обёртку, затем раскрываем вложенные функциональные компоненты (настоящий планировщик здесь не нужен). */
 function renderOnce(SectionFn, stubX) {
 	stubX.beginRender();
 	let el = SectionFn({});
@@ -256,7 +256,7 @@ let tree;
 async function render() {
 	tree = renderOnce(Section, stub);
 	await flush();
-	// 设置到达后（useSettings 广播）再渲染两次，让回填 effect 跑起来
+	// После прихода настроек (рассылка useSettings) рендерим ещё дважды, чтобы отработал effect заполнения
 	tree = renderOnce(Section, stub);
 	tree = renderOnce(Section, stub);
 	if (process.env.DEBUG_TREE) console.log(JSON.stringify(tree, (k, v) => (typeof v === "function" ? "[fn]" : v), 1).slice(0, 3000));
@@ -293,7 +293,7 @@ await test("Переключение на пользовательский TTS: 
 	assert.equal(controlByLabel(tree, "Голос (Пользовательский TTS)").props.value, "Mia");
 });
 
-await test("Переключение на Edge: отображается только его голос (Mia/冰糖 не появляются)", () => {
+await test("Переключение на Edge: отображается только его голос (голоса Mia и MiMo не появляются)", () => {
 	onChangeOf(tree, "Движок TTS")({ target: { value: "edge" } });
 	tree = renderOnce(Section, stub);
 	assert.equal(controlByLabel(tree, "Голос (Edge TTS)").props.value, "zh-CN-YunxiNeural");

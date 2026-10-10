@@ -760,7 +760,7 @@ await test("Ошибка getUserMedia в barge-in: только warn, озвуч
 	await m.waitSpeech();
 	assert.equal(m.micOpens, 1, "barge-in попытался взять микрофон и получил отказ");
 	assert.ok(
-		m.logs("warn").some((l) => l.includes("插话监听未启动")),
+		m.logs("warn").some((l) => l.includes("контроль перебивания не запущен")),
 		"ошибка barge-in логируется как warn, а не бросается наружу"
 	);
 	m.finishSpeech(); // пайплайн озвучки не должен зависнуть после отказа

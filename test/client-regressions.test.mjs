@@ -25,7 +25,7 @@ const CLIENT_SRC = process.env.DSH_CLIENT_SRC
 	? path.resolve(process.env.DSH_CLIENT_SRC)
 	: path.join(HERE, "..", "lib", "client.js");
 
-// ---------- 极简 React 桩（useState/useEffect/useRef/createElement 足够渲染) ----------
+// ---------- Минимальная заглушка React (хватает useState/useEffect/useRef/createElement для отрисовки) ----------
 function createReactStub() {
 	const states = [];
 	const refs = [];
@@ -82,7 +82,7 @@ function createReactStub() {
 	};
 }
 
-// ---------- 元素树工具 ----------
+// ---------- Утилиты обхода дерева элементов ----------
 function walk(node, visit) {
 	if (!node || typeof node !== "object") return;
 	visit(node);
@@ -93,7 +93,7 @@ function textOf(node) {
 	if (!node || typeof node !== "object") return "";
 	return (node.children || []).map(textOf).join("");
 }
-/** 找到 field(label, control) 渲染出的控件，返回它的节点。 */
+/** Находит контрол, отрисованный полем field(label, control), и возвращает его узел. */
 function controlByLabel(tree, labelText) {
 	let found = null;
 	walk(tree, (node) => {
@@ -153,7 +153,7 @@ function expandComponents(el, stubX, depth = 0) {
 	return { ...el, children: (el.children || []).map((c) => expandComponents(c, stubX, depth + 1)) };
 }
 
-/** 渲染一次: обёртка → её тело → раскрытие вложенных компонентов. */
+/** Один проход отрисовки: обёртка → её тело → раскрытие вложенных компонентов. */
 function renderOnce(Component, stubX) {
 	stubX.beginRender();
 	let el = Component({});
@@ -162,7 +162,7 @@ function renderOnce(Component, stubX) {
 	return expandComponents(el, stubX);
 }
 
-// ---------- 宿主 / settings ----------
+// ---------- Хост / settings ----------
 const HOST_SETTINGS = {
 	version: "0.7.0",
 	asrEngine: "siliconflow",
