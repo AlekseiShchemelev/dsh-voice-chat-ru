@@ -15,7 +15,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SETTINGS_DIR = await mkdtemp(path.join(os.tmpdir(), "dsh-vc-smoke-"));
 const SETTINGS_FILE = path.join(SETTINGS_DIR, "settings.local.json");
 process.env.DSH_VOICE_SETTINGS_FILE = SETTINGS_FILE;
-const { apply } = await import("../lib/index.js");
+const { apply, MASKED_SECRET } = await import("../lib/index.js");
 
 const pkgVersion = JSON.parse(await readFile(path.join(HERE, "..", "package.json"), "utf8")).version;
 
@@ -125,12 +125,9 @@ try {
 		rewrite: true
 	});
 	const second = await getSettings();
-	check("Слот MiMo TTS успешно записан", () => {
-		assert.equal(second.ttsConfig.mimo.apiKey, "mimo-key");
+	check("Слот MiMo TTS успешно записан (в ответе ключ замаскирован)", () => {
+		assert.equal(second.ttsConfig.mimo.apiKey, MASKED_SECRET);
 		assert.equal(second.ttsConfig.mimo.voice, "冰糖");
-	});
-	check("После смены движка сохранение в custom не перекрывает MiMo", () => {
-		assert.equal(second.ttsConfig.mimo.apiKey, "mimo-key");
 	});
 	await postSettings({
 		asrEngine: "custom",
@@ -138,10 +135,10 @@ try {
 		tts: { custom: { baseUrl: "http://127.0.0.1:52992/v1", model: "kokoro-82m-zh", apiKey: "custom-key", voice: "Mia" } }
 	});
 	const third = await getSettings();
-	check("Пользовательский TTS и MiMo TTS не перекрывают друг друга", () => {
-		assert.equal(third.ttsConfig.custom.apiKey, "custom-key");
+	check("Пользовательский TTS и MiMo TTS не перекрывают друг друга (в ответе ключи замаскированы)", () => {
+		assert.equal(third.ttsConfig.custom.apiKey, MASKED_SECRET);
 		assert.equal(third.ttsConfig.custom.voice, "Mia");
-		assert.equal(third.ttsConfig.mimo.apiKey, "mimo-key", "Ключ MiMo должен сохраниться без изменений");
+		assert.equal(third.ttsConfig.mimo.apiKey, MASKED_SECRET, "Ключ MiMo замаскирован");
 		assert.equal(third.ttsConfig.mimo.voice, "冰糖", "Голос MiMo должен сохраниться без изменений");
 		assert.equal(third.ttsConfig.edge.voice, first.ttsConfig.edge.voice, "Голос Edge не задет");
 	});
@@ -151,8 +148,16 @@ try {
 		for (const key of ["asrBaseUrl", "asrModel", "asrApiKey", "ttsBaseUrl", "ttsModel", "ttsApiKey", "ttsVoice"]) {
 			assert.equal(key in onDisk, false, `ключ ${key} должен быть вычищен`);
 		}
-		assert.equal(onDisk.tts.mimo.apiKey, "mimo-key");
-		assert.equal(onDisk.tts.custom.apiKey, "custom-key");
+		assert.equal(onDisk.tts.mimo.apiKey, "mimo-key", "На диске реальный ключ MiMo, а не маска");
+		assert.equal(onDisk.tts.custom.apiKey, "custom-key", "На диске реальный ключ custom");
+	});
+	// Обратный проход: клиент присылает обратно маску (поле не меняли) — реальный ключ на диске не должен пострадать
+	await postSettings({ ttsEngine: "mimo", tts: { mimo: { apiKey: MASKED_SECRET, voice: "冰糖" } } });
+	const diskAfterMask = JSON.parse(await readFile(SETTINGS_FILE, "utf8"));
+	check("Повторная отправка маски не затирает реальный ключ и голос", () => {
+		assert.equal(diskAfterMask.tts.mimo.apiKey, "mimo-key");
+		assert.equal(diskAfterMask.tts.custom.apiKey, "custom-key");
+		assert.equal(diskAfterMask.tts.mimo.voice, "冰糖");
 	});
 	const dirEntries = await readdir(SETTINGS_DIR);
 	check("Атомарная запись настроек не оставляет временных .tmp-файлов", () => {
@@ -163,10 +168,13 @@ try {
 		ttsEngine: "mimo", ttsVoice: "茉莉", ttsBaseUrl: "https://api.xiaomimimo.com/v1", ttsModel: "mimo-v2.5-tts", ttsApiKey: "legacy-key"
 	});
 	const fourth = await getSettings();
+	const diskFlat = JSON.parse(await readFile(SETTINGS_FILE, "utf8"));
 	check("Плоские ключи старого клиента попадают только в текущий движок (MiMo) и не трогают пользовательский TTS", () => {
-		assert.equal(fourth.ttsConfig.mimo.apiKey, "legacy-key");
+		assert.equal(fourth.ttsConfig.mimo.apiKey, MASKED_SECRET);
 		assert.equal(fourth.ttsConfig.mimo.voice, "茉莉");
-		assert.equal(fourth.ttsConfig.custom.apiKey, "custom-key", "Пользовательский TTS должен остаться прежним");
+		assert.equal(fourth.ttsConfig.custom.apiKey, MASKED_SECRET, "Пользовательский TTS замаскирован");
+		assert.equal(diskFlat.tts.mimo.apiKey, "legacy-key");
+		assert.equal(diskFlat.tts.custom.apiKey, "custom-key", "Пользовательский TTS должен остаться прежним");
 	});
 
 	console.log("\nРегрессия: MiMo TTS без Base URL больше не жалуется «не задан Base URL» (офлайн-проверка)");

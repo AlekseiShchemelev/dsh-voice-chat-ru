@@ -33,7 +33,8 @@ import {
 	synthesizeWithCustomTts,
 	synthesizeWithMimoTts,
 	transcribe,
-	transcribeWithChatAsr
+	transcribeWithChatAsr,
+	truncateBody
 } from "../lib/index.js";
 import { buildSsml, generateSecMsGec } from "../lib/edge-tts.js";
 import { ssmlRateFromPercent } from "../lib/shared.js";
@@ -987,6 +988,16 @@ test("порт по умолчанию — 8765, и адрес движка на
 	assert.equal(resolveTtsConfig({}, { ttsEngine: "local" }, "local").baseUrl, `http://127.0.0.1:${DEFAULT_LOCAL_PORT}/v1`);
 	// Нестандартный порт из слота — и адрес, и порт запускаемого сервера
 	assert.equal(localPort({}, "http://127.0.0.1:9321/v1"), 9321);
+});
+
+test("truncateBody обрезает длинные тела ответов и не трогает короткие", () => {
+	assert.equal(truncateBody("короткий"), "короткий");
+	assert.equal(truncateBody(""), "");
+	const long = "x".repeat(500);
+	const cut = truncateBody(long);
+	assert.equal(cut.length, 201, "200 символов + многоточие");
+	assert.ok(cut.endsWith("…"));
+	assert.equal(truncateBody(long, 10), "xxxxxxxxxx…");
 });
 
 console.log(`\n${passed} пройдено${process.exitCode ? " (есть падения)" : ""}`);

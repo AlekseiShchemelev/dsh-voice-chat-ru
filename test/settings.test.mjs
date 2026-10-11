@@ -8,6 +8,7 @@ import {
 	TTS_ENGINES,
 	buildPublicSlots,
 	migrateLegacySettings,
+	MASKED_SECRET,
 	mergeSettings,
 	resolveAsrConfig,
 	resolveTtsConfig,
@@ -138,6 +139,21 @@ test("Очистка поля одного движка задевает тол�
 	saved = mergeSettings(saved, sanitizeSettings({ tts: { mimo: { apiKey: "" } } }));
 	assert.equal(saved.tts.mimo.apiKey, "");
 	assert.equal(saved.tts.custom.apiKey, "k2");
+});
+
+test("Маска секрета из GET /settings не затирает сохранённый ключ (слот и плоский)", () => {
+	let saved = mergeSettings({}, sanitizeSettings({
+		tts: { mimo: { baseUrl: "https://a", apiKey: "real-key" } }
+	}));
+	saved = mergeSettings(saved, sanitizeSettings({ tts: { mimo: { apiKey: MASKED_SECRET, voice: "茉莉" } } }));
+	assert.equal(saved.tts.mimo.apiKey, "real-key", "маска не должна затирать ключ");
+	assert.equal(saved.tts.mimo.voice, "茉莉", "остальные поля применяются");
+	// Плоский ключ старого клиента: маска тоже не должна затирать ключ
+	const flat = mergeSettings(
+		{ ttsEngine: "mimo", tts: { mimo: { apiKey: "real" } } },
+		sanitizeSettings({ ttsEngine: "mimo", ttsApiKey: MASKED_SECRET })
+	);
+	assert.equal(flat.tts.mimo.apiKey, "real");
 });
 
 console.log("\nСовместимость со старым клиентом (плоские ключи)");
