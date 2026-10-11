@@ -240,6 +240,22 @@ function expandComponents(el, stubX, depth = 0) {
 	return { ...el, children: (el.children || []).map((c) => expandComponents(c, stubX, depth + 1)) };
 }
 
+/**
+ * Один проход отрисовки БЕЗ раскрытия вложенных компонентов.
+ *
+ * expandComponents рендерит дочерние компоненты (LocalEngineBox) через subRender,
+ * который начинает нумерацию хуков с нуля, — их useState затирают состояние формы
+ * (движок ASR вдруг становится «edge»). Для проверки кнопок формы это не нужно:
+ * сами кнопки — обычные элементы и есть в дереве.
+ */
+function renderShallow(SectionFn, stubX) {
+	stubX.beginRender();
+	let el = SectionFn({});
+	if (el && typeof el.type === "function") el = el.type(el.props);
+	stubX.runEffects();
+	return el;
+}
+
 /** Один проход отрисовки: сначала вызываем зарегистрированную обёртку, затем раскрываем вложенные функциональные компоненты (настоящий планировщик здесь не нужен). */
 function renderOnce(SectionFn, stubX) {
 	stubX.beginRender();
@@ -653,7 +669,9 @@ await test("Не установленный движок: кнопка уста�
 	assert.match(textOf(box), /Python не найден/, "Причина отсутствия Python показывается");
 	await btn.props.onClick();
 	await flush();
-	assert.deepEqual(posts, ["/dsh-voice-chat/local/install"]);
+	assert.deepEqual(posts, ["/dsh-voice-chat/local/install?model=small&voice=ru_RU-irina-medium"],
+		"установка получает выбранные модель и голос явно: без них ставилось прошлое "
+		+ "сохранение настроек, то есть скачивалась не та модель, что выбрана в форме");
 });
 
 await test("Идущая установка показывает фазу и блокирует кнопки", async () => {
@@ -731,6 +749,90 @@ await test("Список скачанных моделей: видно разм�
 	await flush();
 	assert.deepEqual(posts, ["/dsh-voice-chat/local/remove-model?id=models--Systran--faster-whisper-medium"]);
 	assert.match(removeBtns[1].props.title, /medium/, "подсказка должна называть модель, которую удаляет");
+});
+
+/**
+ * Форма настроек с локальным ASR: отдаём заданный статус /local/status и
+ * собираем POST'ы. Нужна кнопкам скачивания/удаления модели: они живут в
+ * настройках (рядом со списком модели), а не в блоке управления движком.
+ */
+async function renderLocalAsrForm(statusBody, postLog) {
+	const stubF = createReactStub();
+	let downloaded = statusBody;
+	const SectionF = await loadSettingsSection(stubF, (url, options = {}) => {
+		const u = String(url);
+		if (u.includes("/local/status")) {
+			return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(downloaded) });
+		}
+		if (options.method === "POST" && u.includes("/local/")) {
+			postLog.push(u);
+			if (u.includes("download-model")) {
+				const model = decodeURIComponent(u.split("model=")[1] || "");
+				downloaded = {
+					...downloaded,
+					models: [...(downloaded.models || []), {
+						id: "models--Systran--faster-whisper-" + model, type: "whisper",
+						name: model, bytes: 75_000_000, inUse: true
+					}]
+				};
+			}
+			if (u.includes("remove-model")) {
+				downloaded = { ...downloaded, models: (downloaded.models || []).filter((m) => !u.includes(m.id)) };
+			}
+			return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, alreadyDownloaded: false, status: downloaded }) });
+		}
+		return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(HOST_SETTINGS) });
+	});
+	let t = renderShallow(SectionF, stubF);
+	t = renderShallow(SectionF, stubF);
+	t = renderShallow(SectionF, stubF);
+	onChangeOf(t, "Движок ASR")({ target: { value: "local" } });
+	// Один проход рисует форму, ответ опроса статуса приходит следующим
+	const draw = async () => {
+		const n = renderShallow(SectionF, stubF);
+		await flush();
+		return n;
+	};
+	await draw();
+	return { draw };
+}
+
+const LOCAL_ASR_FORM_READY = {
+	pythonReady: true, venvReady: true, depsReady: true, modelsReady: true, serverRunning: false,
+	installing: false, modelsBytes: 483_183_820, hasFiles: true, dataDir: "/tmp/dsh",
+	models: [{ id: "models--Systran--faster-whisper-small", type: "whisper", name: "small", bytes: 483_183_820, inUse: false }]
+};
+
+await test("У выбранной модели распознавания есть «Скачать»/«Удалить», и они меняют состояние", async () => {
+	const postLog = [];
+	const { draw } = await renderLocalAsrForm(LOCAL_ASR_FORM_READY, postLog);
+	let treeF = await draw();
+
+	// small скачан — кнопка скачивания неактивна, удаление доступно
+	assert.match(textOf(buttonByText(treeF, /small скачана/)), /small скачана/,
+		"скачанная модель должна быть видна прямо у списка");
+	assert.equal(buttonByText(treeF, /Удалить/).props.disabled, false);
+
+	// Выбрали модель, которой на диске нет: кнопка скачивания активна
+	controlByLabel(treeF, "Модель распознавания (faster-whisper)").props.onChange({ target: { value: "tiny" } });
+	treeF = await draw();
+	const dl = buttonByText(treeF, /^Скачать tiny$/);
+	assert.ok(dl, "у нескачанной модели должна быть кнопка «Скачать tiny»");
+	assert.equal(dl.props.disabled, false, "venv есть — качать можно");
+	await dl.props.onClick();
+	await flush();
+	assert.deepEqual(postLog, ["/dsh-voice-chat/local/download-model?model=tiny"],
+		"скачивается ровно та модель, что выбрана в списке");
+
+	// После скачивания состояние перерисовалось: модель на диске, удалять можно
+	treeF = await draw();
+	assert.match(textOf(buttonByText(treeF, /tiny скачана/)), /tiny скачана/);
+	const rm = buttonByText(treeF, /^Удалить$/);
+	assert.equal(rm.props.disabled, false);
+	await rm.props.onClick();
+	await flush();
+	assert.deepEqual(postLog[1], "/dsh-voice-chat/local/remove-model?id=models--Systran--faster-whisper-tiny",
+		"удаление идёт по идентификатору каталога снапшота с диска, а не по имени модели");
 });
 
 await test("Скачивание произвольного голоса: режим «Другой голос» + кнопка", async () => {

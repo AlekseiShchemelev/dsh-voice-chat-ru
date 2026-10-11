@@ -17,10 +17,15 @@
 
 		/**
 		 * Блок управления локальным движком (faster-whisper + Piper): статус +
-		 * кнопки «Установить» / «Запустить» / «Остановить» / «Обновить».
+		 * кнопки «Установить» / «Скачать модель» / «Запустить» / «Остановить» / «Обновить».
 		 * Сервер и так поднимается автоматически перед первым запросом, кнопки нужны
 		 * для установки, диагностики и ручного управления. Пока идёт установка или
 		 * сервер не отвечает — статус опрашивается раз в 2 с.
+		 *
+		 * props.whisperModel / props.piperVoice — выбор пользователя в форме настроек
+		 * ВЫШЕ этого блока, ещё не обязательно сохранённый на диск. Без них установка
+		 * и докачка смотрели бы в settings.local.json, то есть скачивали бы модель
+		 * предыдущего выбора («выбрал tiny — скачался small»).
 		 */
 		function LocalEngineBox(props) {
 			const [state, setState] = useState(null); // объект статуса от /local/status
@@ -29,9 +34,26 @@
 			const [confirmRemove, setConfirmRemove] = useState(false); // первый клик — спросить, второй — снести
 			const [note, setNote] = useState("");
 
+			/**
+			 * Что именно качать/показывать: выбор в форме (свежий) > значение из
+			 * сохранённых настроек (status) > встроенный дефолт движка.
+			 */
+			const targetModel = () => asText(props && props.whisperModel)
+				|| asText(state && state.whisperModel)
+				|| (ASR_ENGINE_DEFAULTS.local || {}).model || "small";
+			const targetVoice = () => asText(props && props.piperVoice)
+				|| asText(state && state.piperVoice) || "ru_RU-irina-medium";
+			// Выбор в форме (props) ещё не сохранён — показываем статус именно о нём,
+			// иначе в блоке была бы видна модель из файла, а качается другая
+			const pickedModel = asText(props && props.whisperModel);
+			const pickedVoice = asText(props && props.piperVoice);
+
 			const refresh = useCallback(async () => {
 				try {
-					const resp = await window.fetch("/dsh-voice-chat/local/status");
+					const query = [pickedModel ? "model=" + encodeURIComponent(pickedModel) : "",
+						pickedVoice ? "voice=" + encodeURIComponent(pickedVoice) : ""]
+						.filter(Boolean).join("&");
+					const resp = await window.fetch("/dsh-voice-chat/local/status" + (query ? "?" + query : ""));
 					const data = await resp.json().catch(() => ({}));
 					if (!resp.ok) throw new Error((data && data.error) || `HTTP ${resp.status}`);
 					setState(data);
@@ -39,7 +61,8 @@
 				} catch (e) {
 					setErr("Статус недоступен: " + (e && e.message ? e.message : String(e)));
 				}
-			}, []);
+				// Зависит от выбора в форме: он меняет, о ком спрашиваем статус
+			}, [pickedModel, pickedVoice]);
 
 			const call = useCallback(async (path, label) => {
 				setBusy(label);
@@ -73,7 +96,27 @@
 				return () => window.clearInterval(t);
 			}, [state, refresh]);
 
-			const installed = !!(state && state.venvReady && state.modelsReady);
+			// Скачанные модели с диска: по ним считаем готовность ВЫБРАННЫХ целей,
+			// а не только той модели, что лежит в сохранённых настройках
+			const models = Array.isArray(state?.models) ? state.models : null;
+			const modelOnDisk = (name) => !!models && models.some(
+				(m) => m && m.type === "whisper" && String(m.name).toLowerCase() === String(name).toLowerCase());
+			const voiceOnDisk = (name) => !!models && models.some(
+				(m) => m && m.type === "piper" && String(m.name).toLowerCase() === String(name).toLowerCase());
+			const targetReady = models
+				? (modelOnDisk(targetModel()) && voiceOnDisk(targetVoice()))
+				: !!state?.modelsReady;
+			/**
+			 * Каких моделей faster-whisper из списка на диске нет. Раньше докачать
+			 * можно было только одну — выбранную в настройках, и то кнопкой с
+			 * невнятной подписью; пользователю было негде узнать, что именно
+			 * можно скачать. Теперь отсутствующие модели перечислены с кнопкой.
+			 */
+			const missingWhisper = () => (models
+				? LOCAL_ASR_MODELS.filter((name) => !modelOnDisk(name))
+				: []);
+
+			const installed = !!(state && state.venvReady && targetReady);
 			/** Удалять есть что: на диске лежит хоть один из компонентов окружения. */
 			const hasFiles = !!(state && state.hasFiles);
 
@@ -130,28 +173,43 @@
 				}
 			};
 			/**
-			 * Докачать выбранную модель faster-whisper. Сервер берёт модель из
+			 * Скачать выбранную модель faster-whisper. Сервер берёт модель из
 			 * настроек, поэтому переключение модели без скачивания означало бы
 			 * запрос к модели, которой на диске нет.
+			 *
+			 * Модель берётся из формы настроек (props.whisperModel), а не из статуса:
+			 * иначе «выбрал tiny — скачался small», пока «Сохранить» не нажат.
 			 */
-			const downloadCurrentModel = async () => {
-				const model = (state && state.whisperModel) || "small";
-				setBusy("model");
+			const downloadModelBy = async (model) => {
+				const name = asText(model) || targetModel();
+				setBusy("model:" + name);
 				setErr("");
 				try {
-					const resp = await window.fetch("/dsh-voice-chat/local/download-model?model=" + encodeURIComponent(model), { method: "POST" });
+					const resp = await window.fetch("/dsh-voice-chat/local/download-model?model=" + encodeURIComponent(name), { method: "POST" });
 					const data = await resp.json().catch(() => ({}));
 					if (!resp.ok) throw new Error((data && data.error) || `HTTP ${resp.status}`);
 					setNote(data.alreadyDownloaded
-						? "Модель " + model + " уже скачана"
-						: "Модель " + model + " скачана");
+						? "Модель " + name + " уже скачана"
+						: "Модель " + name + " скачана" + (name === targetModel()
+							? " — сохраните настройки, чтобы её использовать"
+							: " — выберите её в настройках распознавания"));
 					setState(data.status || null);
 				} catch (e) {
-					setErr("Не удалось скачать модель: " + (e && e.message ? e.message : String(e)));
+					setErr("Не удалось скачать модель " + name + ": " + (e && e.message ? e.message : String(e)));
 				} finally {
 					setBusy("");
 					await refresh();
 				}
+			};
+			const downloadCurrentModel = () => downloadModelBy(targetModel());
+
+			/**
+			 * Установка: цели (модель/голос) передаются явно, иначе ставится то, что
+			 * лежит в settings.local.json, а не то, что выбрано в форме прямо сейчас.
+			 */
+			const install = async () => {
+				const query = "?model=" + encodeURIComponent(targetModel()) + "&voice=" + encodeURIComponent(targetVoice());
+				await call("install" + query, "install");
 			};
 
 			const lines = [];
@@ -171,9 +229,11 @@
 				} else {
 					lines.push("… Зависимости: проверка импорта…");
 				}
-				lines.push((state.modelsReady ? "✓" : "✗") + " Модели: faster-whisper "
-				+ (state.whisperModel || (ASR_ENGINE_DEFAULTS.local || {}).model || "small")
-				+ ", голос Piper " + (state.piperVoice || "ru_RU-irina-medium"));
+				lines.push((targetReady ? "✓" : "✗") + " Модели: faster-whisper "
+				+ targetModel()
+				+ ", голос Piper " + targetVoice()
+				+ (models && (!modelOnDisk(targetModel()) || !voiceOnDisk(targetVoice()))
+					? " (не всё скачано — кнопка «Докачать модель» ниже)" : ""));
 				lines.push((state.serverRunning ? "✓" : "✗")
 					+ " Сервер: " + (state.serverRunning ? ("работает на порту " + (state.port ?? "—") + (state.pid ? " (pid " + state.pid + ")" : "")) : "не запущен"));
 				lines.push("Каталог данных: " + (state.dataDir || "—"));
@@ -186,12 +246,16 @@
 
 			// Скачанные модели: пользователь мог накачать несколько, и удалять их надо
 			// поштучно — показываем, что именно лежит и сколько места занимает каждый пункт
-			const models = Array.isArray(state?.models) ? state.models : [];
-			const modelsBlock = models.length
+			const modelsList = models || [];
+			/** Моделей faster-whisper на диске нет — их тоже показываем: иначе «докачать» негде. */
+			const missing = missingWhisper();
+			const modelsBlock = (modelsList.length || missing.length)
 				? React.createElement("div", { style: { marginTop: 10 } },
-					React.createElement("div", { style: { fontSize: 12, opacity: 0.85, marginBottom: 4 } },
-						"Скачанные модели — всего " + formatBytes(state.modelsBytes) + ". Лишние можно удалить здесь:"),
-					models.map((m) => React.createElement("div", {
+					modelsList.length
+						? React.createElement("div", { style: { fontSize: 12, opacity: 0.85, marginBottom: 4 } },
+							"Скачанные модели — всего " + formatBytes(state.modelsBytes) + ". Лишние можно удалить здесь:")
+						: null,
+					modelsList.map((m) => React.createElement("div", {
 						key: m.id,
 						style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12, marginTop: 4 }
 					},
@@ -210,7 +274,25 @@
 					)),
 					React.createElement("div", { style: SECTION_STYLES.note },
 						"● — текущая выбранная модель, её удалять смысла нет: движок не запустится, "
-						+ "пока не поставите заново. ○ — можно убрать сразу, место освободится.")
+						+ "пока не поставите заново. ○ — можно убрать сразу, место освободится."),
+					// Чего из списка моделей faster-whisper на диске нет: скачать можно
+					// любую, а не только выбранную в настройках
+					missing.length
+						? React.createElement("div", { style: { marginTop: 10 } },
+							React.createElement("div", { style: { fontSize: 12, opacity: 0.85, marginBottom: 4 } },
+								"Не скачаны: " + missing.join(", ") + ". Кнопка скачивает модель и сразу "
+								+ "делает её текущей для движка (не забудьте сохранить настройки)."),
+							React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+								missing.map((name) => React.createElement("button", {
+									key: "dl-" + name,
+									type: "button",
+									style: SECTION_STYLES.secondary,
+									disabled: !!busy || !state?.venvReady,
+									onClick: () => downloadModelBy(name),
+									title: "Скачать faster-whisper " + name
+								}, busy === "model:" + name ? "Скачивание…" : "Скачать " + name))
+							))
+						: null
 				)
 				: null;
 
@@ -225,22 +307,23 @@
 						type: "button", style: SECTION_STYLES.primary,
 						// Во время установки кнопка неактивна: install() и так single-flight,
 						// но лишний клик только пугает пользователя
-						disabled: !!busy || !!state?.installing || installed,
-						onClick: () => call("install", "install")
-					}, state?.installing || busy === "install"
-						? "Установка…"
-						: (installed ? "Установлено" : "Установить локальный движок")),
+					disabled: !!busy || !!state?.installing || installed,
+					onClick: install
+				}, state?.installing || busy === "install"
+					? "Установка…"
+					: (installed ? "Установлено" : "Установить локальный движок")),
 				// Докачать выбранную модель: переключили модель распознавания уже
 				// после установки — без этой кнопки /stt ушёл бы на сервер с моделью,
-				// которой на диске нет. Раньше такой кнопки не было вовсе.
+				// которой на диске нет. Имя модели в подписи обязательно: раньше
+				// кнопка молчала, какую именно модель она скачает.
 				React.createElement("button", {
 					type: "button",
 					style: SECTION_STYLES.secondary,
-					disabled: !!busy || !state?.venvReady || state?.modelsReady === true,
+					disabled: !!busy || !!state?.installing || !state?.venvReady,
 					onClick: downloadCurrentModel,
-					title: "Скачать faster-whisper " + (state?.whisperModel || "small")
+					title: "Скачать faster-whisper " + targetModel()
 						+ " (если её ещё нет на диске)"
-				}, busy === "model" ? "Скачивание…" : "Докачать модель"),
+				}, busy === "model:" + targetModel() ? "Скачивание…" : ("Докачать модель " + targetModel())),
 					// Одна кнопка на состояние: сервер поднимается сам при первом
 					// запросе, так что ручное управление — для диагностики и экономии
 					React.createElement("button", {

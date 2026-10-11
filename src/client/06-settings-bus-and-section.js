@@ -203,16 +203,31 @@
 			const ttsSlot = ttsSlots[ttsEngine] || {};
 
 			/**
-			 * Скачанные голоса Piper: список берём из статуса локального движка,
-			 * чтобы в выпадающем списке были видны и докачанные голоса
-			 * (украинский, английский и т. п.), а не только четыре русских.
+			 * Скачанные модели локального движка: список голосов Piper в выпадающем
+			 * списке должен показывать и докачанные, а у модели распознавания прямо
+			 * рядом с выбором стоят «Скачать»/«Удалить» — раньше докачать модель
+			 * можно было только кнопкой в другом блоке, и по её подписи не было
+			 * видно, какую именно модель она скачает.
 			 */
 			const [piperVoices, setPiperVoices] = useState([]);
-			const refreshLocalVoices = useCallback(() => {
+			const [localModels, setLocalModels] = useState([]);
+			const [localEnv, setLocalEnv] = useState(null);
+			const [modelBusy, setModelBusy] = useState("");
+			const [modelNote, setModelNote] = useState("");
+			/**
+			 * Модель/голос менялись в форме, но «Сохранить» ещё не нажат. Только в
+			 * этом случае выбор формы важнее settings.local.json: иначе установка
+			 * качала бы модель прошлого сохранения («выбрал tiny — скачался small»).
+			 */
+			const [modelPicked, setModelPicked] = useState(false);
+			const [voicePicked, setVoicePicked] = useState(false);
+			const refreshLocalEngine = useCallback(() => {
 				return window.fetch("/dsh-voice-chat/local/status")
 					.then((r) => (r.ok ? r.json() : null))
 					.then((data) => {
 						const models = (data && Array.isArray(data.models)) ? data.models : [];
+						setLocalModels(models);
+						setLocalEnv(data || null);
 						setPiperVoices(models
 							.filter((m) => m && m.type === "piper")
 							.map((m) => String(m.id || "").replace(/^piper\//, ""))
@@ -220,9 +235,79 @@
 					})
 					.catch(() => { /* статус недоступен — остаются базовые голоса */ });
 			}, []);
-			useEffect(() => { refreshLocalVoices(); }, [refreshLocalVoices]);
+			useEffect(() => { refreshLocalEngine(); }, [refreshLocalEngine]);
 
 			const downloadedPiperVoices = piperVoices;
+
+			/** Модель faster-whisper, выбранная в списке (пустое значение → дефолт). */
+			const selectedWhisperModel = () =>
+				(LOCAL_ASR_MODELS.includes(asrSlot.model) ? asrSlot.model : "small");
+			/** Её запись в списке скачанного — значит, модель уже лежит на диске. */
+			const downloadedWhisperModel = () => localModels.find((m) => m && m.type === "whisper"
+				&& String(m.name).toLowerCase() === selectedWhisperModel().toLowerCase()) || null;
+
+			/**
+			 * Скачать или удалить выбранную модель распознавания. Идентификатор
+			 * удаления берётся из реального списка на диске, а не собирается из
+			 * имени: id — это имя каталога снапшота, которое знает только хост.
+			 */
+			const modelAction = async (action) => {
+				const name = selectedWhisperModel();
+				const entry = downloadedWhisperModel();
+				if (action === "remove" && !entry) return;
+				if (action === "download" && entry) return;
+				setModelBusy(name);
+				setModelNote("");
+				try {
+					const url = action === "remove"
+						? "/dsh-voice-chat/local/remove-model?id=" + encodeURIComponent(entry.id)
+						: "/dsh-voice-chat/local/download-model?model=" + encodeURIComponent(name);
+					const resp = await window.fetch(url, { method: "POST" });
+					const data = await resp.json().catch(() => ({}));
+					if (!resp.ok) throw new Error((data && data.error) || `HTTP ${resp.status}`);
+					setModelNote(action === "remove"
+						? "Модель " + name + " удалена, место освободилось"
+						: (data.alreadyDownloaded
+							? "Модель " + name + " уже была скачана"
+							: "Модель " + name + " скачана"));
+					await refreshLocalEngine();
+				} catch (e) {
+					setModelNote("Не удалось " + (action === "remove" ? "удалить" : "скачать")
+						+ " модель " + name + ": " + (e && e.message ? e.message : String(e)));
+				} finally {
+					setModelBusy("");
+				}
+			};
+
+			/** Строка «модель на диске» + кнопки скачивания/удаления под списком моделей. */
+			const localModelButtons = () => {
+				const entry = downloadedWhisperModel();
+				const name = selectedWhisperModel();
+				const busyHere = modelBusy === name;
+				return React.createElement("div", { style: { marginTop: 6 } },
+					React.createElement("div", { style: SECTION_STYLES.note },
+						entry
+							? "На диске: " + formatBytes(entry.bytes) + " — модель уже скачана"
+							: "На диске её нет: нажмите «Скачать», иначе распознавание вернёт «модель не скачана»"),
+					React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap", alignItems: "center" } },
+						React.createElement("button", {
+							type: "button",
+							style: entry ? SECTION_STYLES.secondary : SECTION_STYLES.primary,
+							disabled: !!modelBusy || !!entry || !localEnv || localEnv.venvReady !== true,
+							onClick: () => modelAction("download"),
+							title: "Скачать faster-whisper " + name + " (" + (entry ? formatBytes(entry.bytes) : "нет на диске") + ")"
+						}, busyHere && !entry ? "Скачивание…" : (entry ? name + " скачана" : "Скачать " + name)),
+						React.createElement("button", {
+							type: "button",
+							style: { ...SECTION_STYLES.secondary, color: "#ff9a9a", borderColor: "#7a3b3b" },
+							disabled: !!modelBusy || !entry,
+							onClick: () => modelAction("remove"),
+							title: "Удалить только " + name + " (" + formatBytes(entry ? entry.bytes : 0) + ")"
+						}, busyHere && entry ? "Удаление…" : "Удалить"),
+						modelNote ? React.createElement("span", { style: SECTION_STYLES.note }, modelNote) : null
+					)
+				);
+			};
 
 			const localVoiceOptions = () => {
 				const base = LOCAL_TTS_VOICES.map((v) => React.createElement("option", { key: v, value: v },
@@ -252,7 +337,8 @@
 						? "Голос " + customVoice + " уже был скачан"
 						: "Голос " + customVoice + " скачан, его можно выбрать в списке");
 					setSlot("tts", "local", "voice", customVoice);
-					refreshLocalVoices();
+					setVoicePicked(true);
+					refreshLocalEngine();
 				} catch (e) {
 					setVoiceNote("Не удалось скачать голос: " + (e && e.message ? e.message : String(e)));
 				} finally {
@@ -269,13 +355,19 @@
 				field("Модель распознавания (faster-whisper)",
 					React.createElement("select", {
 						style: selectStyle(scheme),
-						value: LOCAL_ASR_MODELS.includes(asrSlot.model) ? asrSlot.model : "small",
-						onChange: (e) => setSlot("asr", "local", "model", e.target.value)
+						value: selectedWhisperModel(),
+						onChange: (e) => { setModelPicked(true); setSlot("asr", "local", "model", e.target.value); }
 					}, LOCAL_ASR_MODELS.map((m) => React.createElement("option", { key: m, value: m },
 						m + (m === "small" ? " — по умолчанию, ~500 МБ" : m === "tiny" ? " — быстрее всего, ~75 МБ" : m === "base" ? " — ~145 МБ" : m === "medium" ? " — точнее, ~1.5 ГБ" : " — максимум качества, ~3 ГБ")))),
-				"Модель скачивается один раз и хранится локально. Для быстрого старта хватит tiny или base, "
-				+ "для русской речи на ноутбуке обычно лучше small. Сменили модель — нажмите «Докачать модель» "
-				+ "в блоке ниже: сама она не скачивается, иначе распознавание вернёт «модель не скачана»."),
+					// Скачивание и удаление выбранной модели — прямо здесь, у её списка:
+					// иначе «выбрал tiny, нажал Установить — скачался small»
+					React.createElement(React.Fragment, null,
+						"Модель скачивается один раз и хранится локально. Для быстрого старта хватит tiny или base, "
+						+ "для русской речи на ноутбуке обычно лучше small. Скачивание и удаление — кнопками "
+						+ "под списком; сама смена модели ничего не скачивает, поэтому не забудьте нажать «Скачать» "
+						+ "— иначе распознавание вернёт «модель не скачана».",
+						localModelButtons()
+					)),
 				field("Порт локального сервера",
 					React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
 						React.createElement("input", {
@@ -508,8 +600,15 @@
 					React.createElement("span", null, "Постоянный диалог"),
 					React.createElement("span", { style: SECTION_STYLES.note }, "(живое общение: после ответа микрофон снова включается, а речь поверх озвучки сразу прерывает её)")
 				),
-				// Локальный движок: управление установкой и сервером (нужно, когда выбран local)
-				(engine === "local" || ttsEngine === "local") ? React.createElement(LocalEngineBox, null) : null,
+				// Локальный движок: управление установкой и сервером (нужно, когда выбран local).
+				// Модель и голос передаём из формы: выбор может быть ещё не сохранён,
+				// и установка без них качала бы модель предыдущего сохранения.
+				(engine === "local" || ttsEngine === "local") ? React.createElement(LocalEngineBox, {
+					// Пока выбор не меняли, блок смотрит в /local/status (там модель
+					// из сохранённых настроек); после правки формы — на несохранённый выбор
+					whisperModel: (engine === "local" && modelPicked) ? selectedWhisperModel() : "",
+					piperVoice: (ttsEngine === "local" && voicePicked) ? asText(ttsSlot.voice) || "ru_RU-irina-medium" : ""
+				}) : null,
 				field("Клавиша запуска распознавания",
 					React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
 						React.createElement("input", {
@@ -635,6 +734,7 @@
 							onChange: (e) => {
 								const value = e.target.value;
 								setLocalVoiceChoice(value);
+								setVoicePicked(true);
 								// В слот пишем только конкретное имя голоса: "custom" — это
 								// режим ввода, а не значение настройки
 								if (value !== "custom") setSlot("tts", "local", "voice", value);

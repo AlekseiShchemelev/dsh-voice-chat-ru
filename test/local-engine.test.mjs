@@ -90,7 +90,11 @@ async function fakePython(dir, { name = "python3", mode = "proxy", logName = "ca
 		"#!/bin/sh",
 		`printf '%s :: %s\\n' "$DSH_VOICE_DATA_DIR" "$*" >> '${log}'`,
 		'if [ "$1" = "--version" ]; then exit 0; fi',
-		mode === "proxy" ? 'exec python3 "$@"' : 'echo "stub failure" >&2; exit 1',
+		// mode=deps — «здоровый» venv: импорт проходит и pip ничего не делает.
+		// Важен именно для тестов установки: реальный pip в тестах запускать нельзя.
+		mode === "proxy" ? 'exec python3 "$@"'
+			: mode === "deps" ? 'exit 0'
+				: 'echo "stub failure" >&2; exit 1',
 		""
 	];
 	await writeFile(bin, lines.join("\n"), "utf8");
@@ -101,7 +105,8 @@ async function fakePython(dir, { name = "python3", mode = "proxy", logName = "ca
 /** Ставит venv-заглушку в правильную кроссплатформенную раскладку. */
 async function fakeVenv(dataDir, opts = {}) {
 	// delayMs по умолчанию: заглушка спит, чтобы фазы установки было видно в статусе
-	return fakePython(path.join(dataDir, "venv", "bin"), { name: "python3", delayMs: 250, ...opts });
+	// mode по умолчанию — deps: venv запускается, импорт faster_whisper/piper «проходит»
+	return fakePython(path.join(dataDir, "venv", "bin"), { name: "python3", delayMs: 250, mode: "deps", ...opts });
 }
 
 /**
@@ -306,7 +311,7 @@ await testNeeds(
 
 await test("status(): готовый venv находится, модели — по файлам на диске, без импорта моделей", async () => {
 	const dataDir = await freshDataDir("status-venv");
-	const venv = await fakeVenv(dataDir);
+	const venv = await fakeVenv(dataDir, { mode: "fail" });   // импорт падает → depsReady=false
 	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: undefined } }, async () => {
 		const st = await createLocalEngineManager().status();
 		assert.equal(st.venvReady, true);
@@ -439,7 +444,27 @@ await test("ensureVenv: готовый venv переиспользуется (б
 		const log = await venv.readLog();
 		assert.match(log, /--version/);
 		assert.ok(!log.includes("-m venv"), "venv уже готов, создавать заново нельзя");
-		assert.ok(!log.includes("pip"), "зависимости не переустанавливаются");
+		assert.ok(!log.includes("-m pip install"), "зависимости на месте, переустанавливать нельзя");
+	});
+});
+
+await test("ensureVenv: venv без пакетов чинится (pip запускается, venv не пересоздаётся)", async () => {
+	// Регрессия: раньше ensureVenv возвращался по одному `python --version`, и venv,
+	// оставшийся без faster-whisper/piper после прерванной установки, был нечинимым —
+	// кнопка «Установить» не делала ничего, а модели качались (download_models.py
+	// работает на urllib и в pip-пакетах не нуждается).
+	const dataDir = await freshDataDir("ensure-venv-repair");
+	const venv = await fakeVenv(dataDir, { mode: "fail" });
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: undefined } }, async () => {
+		await assert.rejects(
+			() => createLocalEngineManager({ pipTimeoutMs: 5_000 }).ensureVenv("/usr/bin/python3"),
+			/Не удалось установить зависимости/
+		);
+		const log = await venv.readLog();
+		assert.ok(!log.includes("-m venv"), "venv рабочий, пересоздавать его нельзя");
+		assert.match(log, /-m pip install/,
+			"venv без faster-whisper/piper должен доустанавливаться через pip:\n" + log);
+		assert.match(log, /requirements\.txt/);
 	});
 });
 
@@ -712,7 +737,7 @@ await test("remove(): пустое окружение — не ошибка", as
 
 await testNeeds("remove() останавливает работающий сервер", hasPython3, "нет python3 в системе", async () => {
 	const dataDir = await freshDataDir("remove-stops-server");
-	await fakeVenv(dataDir);
+	await fakeVenv(dataDir, { mode: "proxy" });   // реальный py/server.py нужен для /health
 	await makeModels(dataDir);
 	const port = await freePort();
 	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
@@ -744,7 +769,7 @@ await testNeeds(
 	hasPython3, "нет python3 в системе",
 	async () => {
 		const dataDir = await freshDataDir("ensure-autostart");
-		await fakeVenv(dataDir);
+		await fakeVenv(dataDir, { mode: "proxy" });   // реальный py/server.py нужен для /health
 		await makeModels(dataDir);
 		const port = await freePort();
 		await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {

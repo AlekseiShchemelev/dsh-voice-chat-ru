@@ -225,6 +225,37 @@ await test("/local/download-model с кривым ?model= → 400 про имя 
 	assert.match((await resp.json()).error, /Некорректное имя модели/);
 });
 
+await test("/local/install?model= берёт модель из запроса, а не из старых настроек", async () => {
+	// В настройках лежит small, а в форме пользователь выбрал tiny и ещё не
+	// сохранил. Установка обязана целиться в tiny — иначе качается не та модель.
+	await saveSettings({ asr: { local: { baseUrl: "http://127.0.0.1:59997/v1", model: "small" } } });
+	const resp = await fetch(`${base}/dsh-voice-chat/local/install?model=${encodeURIComponent("tiny")}`, { method: "POST" });
+	assert.equal(resp.status, 200);
+	// Движок не установлен, поэтому установка уходит в фон и падает: цели
+	// установки видны в статусе — именно их и проверяем.
+	await new Promise((r) => setTimeout(r, 300));
+	const status = await (await fetch(`${base}/dsh-voice-chat/local/status`)).json();
+	assert.equal(status.whisperModel, "tiny",
+		`установка должна была целиться в выбранную модель, а цели: ${status.whisperModel}`);
+	assert.equal(status.modelsReady, false, "tiny на диске нет — установка обязана её качать");
+});
+
+await test("/local/install с кривым ?model= → 400 про имя модели", async () => {
+	const resp = await fetch(`${base}/dsh-voice-chat/local/install?model=${encodeURIComponent("../etc")}`, { method: "POST" });
+	assert.equal(resp.status, 400);
+	assert.match((await resp.json()).error, /Некорректное имя модели/);
+});
+
+await test("/local/install?model= меняет и голос Piper, если он передан", async () => {
+	await saveSettings({ tts: { local: { baseUrl: "http://127.0.0.1:59997/v1", voice: "ru_RU-irina-medium" } } });
+	const resp = await fetch(`${base}/dsh-voice-chat/local/install?model=small&voice=${encodeURIComponent("ru_RU-denis-medium")}`, { method: "POST" });
+	assert.equal(resp.status, 200);
+	await new Promise((r) => setTimeout(r, 300));
+	const status = await (await fetch(`${base}/dsh-voice-chat/local/status`)).json();
+	assert.equal(status.piperVoice, "ru_RU-denis-medium");
+	assert.equal(status.whisperModel, "small");
+});
+
 await test("Сетевой сбой: 502 с адресом и подсказкой вместо бесполезного «fetch failed»", async () => {
 	// Порт закрыт по-настоящему (занимаем и сразу освобождаем) — ровно тот
 	// случай, когда локальный сервер не поднят или в настройках разошёлся порт.
