@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
+# Аннотации ленивы: модуль использует синтаксис `str | None`, и без этого
+# импорта он падал бы с TypeError уже при загрузке на Python 3.9.
+from __future__ import annotations
+
 import argparse
 import io
 import json
 import logging
+import math
 import os
 import re
-import struct
 import sys
 import threading
 import time
@@ -42,6 +46,13 @@ SUPPORTED_PIPER_VOICES = {
 }
 # Имя каталога модели: только буквы/цифры/дефис/подчёркивание (защита от ../../)
 VOICE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+# Лимиты тела: у распознавания запись длиннее, у синтеза — только JSON+текст.
+# Общий на всё лимит позволял любой странице залить сотни МБ в один запрос.
+MAX_STT_BODY = 64 * 1024 * 1024
+MAX_TTS_BODY = 1024 * 1024
+# Сквозной таймаут сокета: без него молчащий клиент держал поток вечно.
+REQUEST_TIMEOUT_S = 60
 
 
 class EngineNotInstalledError(RuntimeError):
@@ -101,7 +112,9 @@ def read_request_body(stream, headers, max_body: int = 256 * 1024 * 1024) -> byt
                 raise ValueError(f"body exceeds {max_body} bytes")
             data = stream.read(size)
             if len(data) != size:
-                break
+                # Обрезанный чанк — это не «тело кончилось», а битый фрейминг:
+                # молчаливое усечение превращало запись в пустую без объяснения.
+                raise ValueError("incomplete chunk: connection closed mid-body")
             chunks.append(data)
             # CRLF после данных чанка по RFC обязателен, но на практике
             # встречаются клиенты, которые его не шлют. peek() смотрит вперёд,
@@ -185,7 +198,11 @@ def parse_multipart(body: bytes, content_type: str) -> dict:
 
 
 _whisper_models = {}
+# _whisper_lock сериализует инференс; _whisper_load_lock защищает саму загрузку
+# (её зовёт и /warm, в обход _whisper_lock). Без отдельного лока два параллельных
+# /warm и /stt грузили одну модель дважды — для medium это +1.5 ГБ RAM.
 _whisper_lock = threading.Lock()
+_whisper_load_lock = threading.Lock()
 _piper_voices = {}
 # Именно RLock, а не Lock: _synthesize() держит блокировку и внутри вызывает
 # _load_piper(), который берёт её же. Обычный threading.Lock не реентерабелен —
@@ -217,39 +234,56 @@ def _load_whisper(model_name: str):
     if model_name in _whisper_models:
         return _whisper_models[model_name]
 
-    # Сначала проверка наличия модели, потом импорт: иначе на машине без
-    # faster_whisper пользователь получал 500 «No module named 'faster_whisper'»
-    # вместо понятного 409 «модель не скачана, нажмите кнопку установки».
-    available = _downloaded_whisper_models()
-    if model_name not in available:
-        raise ModelNotDownloadedError(model_name, sorted(available))
+    with _whisper_load_lock:
+        # Второй раз за локом: между первой проверкой и захватом модель мог
+        # загрузить параллельный запрос.
+        if model_name in _whisper_models:
+            return _whisper_models[model_name]
 
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError as err:
-        raise EngineNotInstalledError(
-            "faster-whisper не установлен. Откройте Настройки DSH → голосовой чат "
-            "и нажмите «Установить локальный движок»."
-        ) from err
+        # Сначала проверка наличия модели, потом импорт: иначе на машине без
+        # faster_whisper пользователь получал 500 «No module named 'faster_whisper'»
+        # вместо понятного 409 «модель не скачана, нажмите кнопку установки».
+        available = _downloaded_whisper_models()
+        if model_name not in available:
+            raise ModelNotDownloadedError(model_name, sorted(available))
 
-    logger.info("Loading faster-whisper model: %s", model_name)
-    model = WhisperModel(
-        model_name,
-        device="auto",
-        compute_type="auto",
-        download_root=str(DATA_DIR),
-        local_files_only=True,
-    )
-    logger.info("faster-whisper model loaded: %s", model_name)
-    _whisper_models[model_name] = model
-    return model
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as err:
+            raise EngineNotInstalledError(
+                "faster-whisper не установлен. Откройте Настройки DSH → голосовой чат "
+                "и нажмите «Установить локальный движок»."
+            ) from err
+
+        logger.info("Loading faster-whisper model: %s", model_name)
+        model = WhisperModel(
+            model_name,
+            device="auto",
+            compute_type="auto",
+            download_root=str(DATA_DIR),
+            local_files_only=True,
+        )
+        logger.info("faster-whisper model loaded: %s", model_name)
+        _whisper_models[model_name] = model
+        return model
 
 
 def _load_piper(voice_name: str):
     with _piper_lock:
         if voice_name in _piper_voices:
             return _piper_voices[voice_name]
-        from piper import PiperVoice
+        # Валидация живёт здесь, а не в точках вызова: /warm раньше передавал
+        # голос из query без проверки, и voice=../../../x заставлял сервер
+        # открыть любой .onnx на диске (path traversal только на чтение).
+        if not VOICE_NAME_RE.match(voice_name):
+            raise ValueError(f"invalid voice name: {voice_name}")
+        try:
+            from piper import PiperVoice
+        except ImportError as err:
+            raise EngineNotInstalledError(
+                "piper-tts не установлен. Откройте Настройки DSH → голосовой чат "
+                "и нажмите «Установить локальный движок»."
+            ) from err
 
         voice_dir = DATA_DIR / "piper" / voice_name
         model_path = voice_dir / f"{voice_name}.onnx"
@@ -338,6 +372,12 @@ def _decode_audio(audio_bytes: bytes):
 
 def _transcribe(audio_bytes: bytes, model_name: str, language: str | None,
                 beam_size: int | None = None) -> str:
+    try:
+        beam = int(beam_size) if beam_size not in (None, "") else DEFAULT_BEAM_SIZE
+    except (TypeError, ValueError):
+        beam = DEFAULT_BEAM_SIZE
+    if beam <= 0:
+        beam = DEFAULT_BEAM_SIZE
     with _whisper_lock:
         load_started = time.monotonic()
         model = _load_whisper(model_name)
@@ -352,7 +392,7 @@ def _transcribe(audio_bytes: bytes, model_name: str, language: str | None,
         segments, _ = model.transcribe(
             audio,
             language=language,
-            beam_size=beam_size if beam_size and beam_size > 0 else DEFAULT_BEAM_SIZE,
+            beam_size=beam,
             vad_filter=True,
             # Без этого whisper на коротких ответах способен «зациклиться» и
             # дописать начало фразы в конец.
@@ -443,16 +483,54 @@ def _synthesize(text: str, voice_name: str, speed: float) -> bytes:
 
 
 class Handler(BaseHTTPRequestHandler):
+    # Сквозной таймаут на чтение запроса и запись ответа: без него молчащий или
+    # медленный клиент занимал поток навсегда (slowloris/half-open).
+    timeout = REQUEST_TIMEOUT_S
+    # Не публикуем версию Python в заголовке Server.
+    server_version = "dsh-voice-server"
+    sys_version = ""
+
     def log_message(self, format, *args):
         logger.info("%s - %s", self.address_string(), format % args)
 
+    def send_response(self, code, message=None):
+        # Флаг «заголовки уже ушли»: после обрыва клиента попытка отправить
+        # второй ответ (500 поверх 200) ломала протокол keep-alive.
+        self._headers_sent = True
+        super().send_response(code, message)
+
     def _send_json(self, code: int, data: dict):
+        if self.wfile is None or getattr(self, "_headers_sent", False):
+            return
         body = json.dumps(data).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+
+    def _discard_body(self):
+        """Дочитать оставшееся тело, чтобы не сбить keep-alive.
+
+        Если ответ отдаётся раньше, чем прочитано тело (404/400), при HTTP/1.1
+        остаток интерпретируется как следующий запрос — соединение «плывёт».
+        """
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self.close_connection = True
+            return
+        remaining = min(length, MAX_STT_BODY)
+        while remaining > 0:
+            chunk = self.rfile.read(min(65536, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+        if length > MAX_STT_BODY:
+            self.close_connection = True
 
     def do_GET(self):
         if self.path == "/health":
@@ -472,7 +550,7 @@ class Handler(BaseHTTPRequestHandler):
                     for m in sorted(_downloaded_whisper_models())
                 ],
             })
-        elif self.path.startswith("/warm"):
+        elif self.path == "/warm" or self.path.startswith("/warm?"):
             self._handle_warm()
         else:
             self._send_json(404, {"error": "not found"})
@@ -516,18 +594,21 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/v1/audio/speech":
             self._handle_speech()
         else:
+            self._discard_body()
             self._send_json(404, {"error": "not found"})
 
     def _handle_transcription(self):
         content_type = self.headers.get("Content-Type", "")
         if "multipart/form-data" not in content_type:
+            self._discard_body()
             self._send_json(400, {"error": "expected multipart/form-data"})
             return
 
         try:
-            body = read_request_body(self.rfile, self.headers)
+            body = read_request_body(self.rfile, self.headers, MAX_STT_BODY)
             form = parse_multipart(body, content_type)
         except ValueError as e:
+            self.close_connection = True
             self._send_json(400, {"error": f"cannot parse multipart: {e}"})
             return
 
@@ -545,12 +626,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": f"unsupported model: {model_name}"})
             return
 
+        # language уходит прямо в faster-whisper: неизвестный код давал 500.
+        # Принимаем только короткий языковой код (ru, en, zh, …), иначе —
+        # автоопределение.
         language = field_text(form.get("language"), "") or None
+        if language is not None and not re.match(r"^[a-zA-Z]{2,3}$", language):
+            language = None
 
         try:
             text = _transcribe(
                 audio_bytes, model_name, language,
-                beam_size=field_text(form.get("beam_size"), ""),
+                beam_size=field_text(form.get("beam_size"), "") or None,
             )
             self._send_json(200, {"text": text})
         except ModelNotDownloadedError as e:
@@ -564,13 +650,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(e)})
 
     def _handle_speech(self):
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length)
-
+        # Через read_request_body: с лимитом, поддержкой chunked и обработкой
+        # битого Content-Length (раньше int() падал вне try → обрыв соединения,
+        # а тело читалось без ограничения — любой JSON до сотен МБ в RAM).
+        try:
+            body = read_request_body(self.rfile, self.headers, MAX_TTS_BODY)
+        except ValueError as e:
+            self.close_connection = True
+            self._send_json(400, {"error": f"cannot read body: {e}"})
+            return
         try:
             data = json.loads(body)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             self._send_json(400, {"error": "invalid JSON"})
+            return
+        if not isinstance(data, dict):
+            self._send_json(400, {"error": "invalid JSON: expected an object"})
             return
 
         text = data.get("input", "")
@@ -598,20 +693,27 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             self._send_json(400, {"error": "invalid 'speed' field"})
             return
-        if speed <= 0:
-            self._send_json(400, {"error": "'speed' must be > 0"})
+        # NaN <= 0 ложно, а inf давал length_scale = 0 → пустое/битое аудио.
+        if not math.isfinite(speed) or speed <= 0:
+            self._send_json(400, {"error": "'speed' must be a finite number > 0"})
             return
 
+        # Синтез ДО отправки заголовков: иначе исключение после writeHead уходило
+        # вторым ответом поверх 200 и ломало keep-alive.
         try:
             wav_bytes = _synthesize(text, voice_name, speed)
-            self.send_response(200)
-            self.send_header("Content-Type", "audio/wav")
-            self.send_header("Content-Length", str(len(wav_bytes)))
-            self.end_headers()
-            self.wfile.write(wav_bytes)
         except Exception as e:
             logger.exception("Synthesis failed")
             self._send_json(500, {"error": str(e)})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/wav")
+        self.send_header("Content-Length", str(len(wav_bytes)))
+        self.end_headers()
+        try:
+            self.wfile.write(wav_bytes)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
 
 def main():
@@ -628,6 +730,8 @@ def main():
     except KeyboardInterrupt:
         logger.info("Shutting down")
         server.shutdown()
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

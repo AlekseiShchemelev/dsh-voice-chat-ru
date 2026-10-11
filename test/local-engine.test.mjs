@@ -694,6 +694,27 @@ await test("status(): отдаёт список моделей и общий р�
 	});
 });
 
+await test("status(overrides): считает preview по целям запроса и не меняет состояние движка", async () => {
+	const dataDir = await freshDataDir("status-preview");
+	await fakeVenv(dataDir);
+	await makeModels(dataDir); // на диске: small + irina
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: undefined } }, async () => {
+		const manager = createLocalEngineManager({ whisperModel: "small", piperVoice: "ru_RU-irina-medium" });
+		const base = await manager.status();
+		assert.equal(base.whisperModel, "small");
+		assert.equal(base.modelsReady, true, "выбранная модель есть на диске");
+		// Предпросмотр другой модели/голоса — как это делает панель настроек
+		const preview = await manager.status({ whisperModel: "medium", piperVoice: "ru_RU-denis-medium" });
+		assert.equal(preview.whisperModel, "medium", "preview отражает запрошенную модель");
+		assert.equal(preview.piperVoice, "ru_RU-denis-medium");
+		assert.equal(preview.modelsReady, false, "medium/denis на диске нет");
+		// Главное: состояние движка не изменилось (второй обычный status — прежний)
+		const after = await manager.status();
+		assert.equal(after.whisperModel, "small", "preview не должен менять цели движка");
+		assert.equal(after.piperVoice, "ru_RU-irina-medium");
+	});
+});
+
 await testNeeds("downloadVoice(): качает произвольный голос (--only-voice) и кладёт его на диск", hasPython3, "нет python3 в системе", async () => {
 	const dataDir = await freshDataDir("download-voice");
 	await fakeVenv(dataDir);
@@ -746,6 +767,39 @@ await testNeeds("remove() останавливает работающий сер
 		assert.ok(started.pid);
 		await manager.remove();
 		assert.equal(isAlive(started.pid), false, "процесс сервера должен быть убит");
+	});
+});
+
+await test("remove() во время установки отклоняется со статусом 409", async () => {
+	const dataDir = await freshDataDir("install-remove-lock");
+	await fakeVenv(dataDir);
+	await makeModels(dataDir);
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: undefined } }, async () => {
+		const manager = createLocalEngineManager();
+		const installing = manager.install(); // замок берётся синхронно, до первого await
+		await assert.rejects(() => manager.remove(), (err) => {
+			assert.equal(err.status, 409, "конфликт должен быть 409, а не 500");
+			assert.match(err.message, /уже идёт операция/);
+			return true;
+		});
+		// Установка на заглушках завершается штатно и снимает замок
+		await installing;
+		await manager.remove(); // теперь замок свободен
+	});
+});
+
+await test("Две эксклюзивные операции не накладываются: второй remove() → 409", async () => {
+	const dataDir = await freshDataDir("double-remove-lock");
+	await fakeVenv(dataDir);
+	await makeModels(dataDir);
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: undefined } }, async () => {
+		const manager = createLocalEngineManager();
+		const first = manager.remove();
+		await assert.rejects(() => manager.remove(), (err) => {
+			assert.equal(err.status, 409);
+			return true;
+		});
+		await first;
 	});
 });
 

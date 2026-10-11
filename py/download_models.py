@@ -42,8 +42,10 @@ PIPER_BASES = [
     # Зеркало для сетей, где huggingface.co недоступен
     "https://hf-mirror.com/rhasspy/piper-voices/resolve/main",
 ]
+# [^-/] вместо [^-]: имя уходит в путь файлов, и разделитель пути недопустим,
+# иначе voice="../../x_a-b-c" писал бы .onnx вне каталога моделей.
 PIPER_VOICE_PATTERN = re.compile(
-    r"^(?P<lang_family>[^-]+)_(?P<lang_region>[^-]+)-(?P<voice_name>[^-]+)-(?P<voice_quality>.+)$"
+    r"^(?P<lang_family>[^-/]+)_(?P<lang_region>[^-/]+)-(?P<voice_name>[^-/]+)-(?P<voice_quality>[^/]+)$"
 )
 
 # Таймаут подобран так, чтобы «мёртвое» соединение не висело часами,

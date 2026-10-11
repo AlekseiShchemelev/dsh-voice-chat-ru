@@ -6,7 +6,7 @@
  * Запуск: node test/host-smoke.mjs
  */
 import assert from "node:assert/strict";
-import { readFile, mkdtemp, rm } from "node:fs/promises";
+import { readFile, readdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -153,6 +153,11 @@ try {
 		}
 		assert.equal(onDisk.tts.mimo.apiKey, "mimo-key");
 		assert.equal(onDisk.tts.custom.apiKey, "custom-key");
+	});
+	const dirEntries = await readdir(SETTINGS_DIR);
+	check("Атомарная запись настроек не оставляет временных .tmp-файлов", () => {
+		assert.equal(dirEntries.filter((name) => name.includes(".tmp")).length, 0);
+		assert.ok(dirEntries.includes("settings.local.json"), "целевой файл на месте");
 	});
 	await postSettings({
 		ttsEngine: "mimo", ttsVoice: "茉莉", ttsBaseUrl: "https://api.xiaomimimo.com/v1", ttsModel: "mimo-v2.5-tts", ttsApiKey: "legacy-key"

@@ -379,3 +379,147 @@ removeModel) и при смене целей `setTargets()` — иначе `stat
 Тесты: `test/host-routes.test.mjs` (цели установки из `?model=`/`?voice=`),
 `test/client-settings.test.mjs` (кнопки у списка модели меняют состояние),
 `test/client-regressions.test.mjs` (подпись кнопки и её живучесть).
+
+---
+
+# Полное код-ревью v0.8.4 и план работ (Этапы 21–25)
+
+Курс по локальному распознаванию: **Python + hardening** (stdlib `http.server`
+оставляем, закрываем корректность и безопасность; переход на sidecar-бинарники
+вынесен в будущее как Этап 26). Проверено: `lib/` (9 модулей), `py/`, `src/client/`
+(10 частей), сборка, 17 тестов.
+
+## Итоги ревью
+
+### Критические баги (блокеры)
+
+| # | Где | Проблема |
+|---|---|---|
+| 1 | `lib/engines/tts.js:88` | **MiMo TTS полностью сломан**: `CHAT_ASR_URL_RE` не импортирован → `ReferenceError` → 500 на любом запросе. Также `asRecord` (стр. 105). Регрессия рефакторинга v0.8.0, тестами не покрыта, функция не вынесена в фасад `index.js` |
+| 2 | `lib/index.js:216` | **Скорость речи не работает на Edge TTS** (движок по умолчанию): передаётся `vc.rate` вместо `saved.ratePercent`. Противоречит MANUAL |
+| 3 | `lib/index.js:359`, `py/download_models.py:46` | **Path traversal**: `?voice=` из query не валидируется; `PIPER_VOICE_PATTERN` (`[^-]+`) пропускает `/` и `..` → запись `.onnx` вне каталога данных. `GET /local/status?voice=` — то же |
+| 4 | `py/server.py:567` | TTS-эндпоинт читает тело **без лимита** и без обработки битого `Content-Length` |
+| 5 | `py/server.py` | **Нет таймаута сокета** (`timeout=None`) + тело не дочитывается при 404/400 → рассинхрон keep-alive |
+| 6 | `py/server.py:553,355,597` | `beam_size` строкой → `TypeError`/500 на валидном запросе; `speed=NaN/Infinity` проходит проверку `speed <= 0` |
+| 7 | `py/server.py:492` | Path traversal голоса в `/warm` + гонка двойной загрузки whisper-модели (`/warm` без лока) |
+| 8 | `src/client/07-voice-chat-button.js:105` | Stale-closure `playAudioBlob`: настройки скорости не применяются к MiMo-озвучке |
+| 9 | `src/client/07-voice-chat-button.js:606` | Утечка микрофона при сбое `MediaRecorder`/`rec.start()` (треки не останавливаются) |
+
+### Серьёзные (высокий приоритет)
+
+- **Гонки локального движка**: TOCTOU создания двух менеджеров (`index.js:296`);
+  `startOnce` игнорирует разные порты (`local-engine.js:842`); `activePort` не
+  откатывается при неудаче; `installStage` — общий mutable state; `remove()` во
+  время установки сносит каталоги под ногами pip.
+- **Неатомарная запись настроек** — краш посреди `writeFile` теряет конфиг.
+- **Безопасность perimeter**: SSRF через произвольный `baseUrl` + тело ответа
+  апстрима возвращается клиенту (`asr.js:126`, `tts.js:50`); `GET /settings`
+  отдаёт API-ключи открытым текстом; единый лимит тела 128 МБ на `/settings`.
+- **`edge-tts.js`**: сокет не закрывается после синтеза; параметры SSML не экранируются.
+- **`GET /local/status?model=&voice=`** — GET с побочными эффектами (мутирует `pickedTargets`).
+- **Клиент**: fallback-ASR без таймаута; `new SR()` вне try; Tab-ловушка в поле
+  горячей клавиши; порт не ограничен 65535; двойной `refresh()` в `LocalEngineBox`.
+- **Python-требования**: `str | None` без `from __future__` → минимум 3.10, но
+  `ensurePython` это не проверяет; `av` импортируется, но не объявлен в requirements.
+
+### Архитектура (7/10)
+
+Крепкая: правильные направления зависимостей, single-flight, очередь записи
+настроек, паритет клиент/сервер закреплён тестом, сборка клиента оправдана
+ограничением рантайма DSH. Слабое: god-closure `apply()` (640 строк),
+монолит `local-engine.js` (1199 строк = процессы + модели + кэши + сеть + файлы),
+копипаста `/tts`↔`/speak`, 12 ручных `if (method)` + 8 `new URL()` без хелпера,
+`inject` с опциональными сервисами как обязательными (без `sessions` плагин молча
+не зарегистрирует маршруты).
+
+### Устаревшее — вердикт
+
+Оставить (уже правильно): stdlib `http.server` + самописный multipart (cgi удалён
+в 3.13), `FormData`/undici, `AbortSignal.timeout`, async/await, динамические
+`import()`, таймаут `ws` в edge-tts, ретрай `Accept-Encoding: identity`.
+Заменить: ручную разметку маршрутов → хелпер `route()`; `error.status` полями →
+`class HttpError`; if-цепочки `sanitizeSettings` → схема; безусловный
+`preventDefault` в hotkey-поле.
+
+## Этап 21 — Критические баги (v0.8.5, выпускается первым)
+1. `tts.js`: импорт `CHAT_ASR_URL_RE`, `asRecord` из `shared.js`; экспорт
+   `synthesizeWithMimoTts` в фасад `index.js`; smoke-тест MiMo TTS (400 без ключа +
+   успех с фейковым fetch).
+2. `index.js:216`: Edge-ветка получает `ratePercent` → SSML `rate` из настроек;
+   тест на `rate` в `buildSsml`.
+3. `setTargets()` — **единая** валидация: голос Piper `^[a-zA-Z0-9._-]+$` без `..`,
+   модель по allowlist. Валидация переносится из точечных мест в одну функцию;
+   тесты на traversal (`voice=../../x`).
+4. `py/server.py`: лимит тела на TTS-эндпоинте, `int()`/`float()` в try → 400,
+   `math.isfinite(speed)`, `beam_size` → int, дренаж тела во всех ранних ответах,
+   `timeout=60` у handler'а.
+5. `/warm`: валидация голоса перенесена в `_load_piper`; `_load_whisper` — под
+   своим локом (double-checked locking).
+6. `asr.js:111`: валидация пустого `baseUrl` (как в `tts.js`).
+7. Клиент: `playAudioBlob` — deps/`useRef` для настроек; очистка треков в catch
+   `MediaRecorder`; `new SR()` в try; `AbortSignal` в fallback-ASR.
+- [x] Этап 21
+
+## Этап 22 — Надёжность локального движка (v0.9.0)
+1. `getLocalEngine`: single-flight создания менеджера (промис в замыкании).
+2. `startOnce`: порт в ключе single-flight; `activePort` откатывается при неудаче.
+3. `installStage`: единый state-machine под одним guard; `remove()`/`downloadModel()`
+   блокируются во время установки.
+4. Атомарная запись настроек: `writeFile(tmp)` + `rename()` (оба места записи).
+5. `edge-tts.js`: `socket.close()` в finally; экранирование SSML-параметров
+   (`voice`/`pitch`/`rate`).
+6. `GET /local/status` без побочных эффектов: переопределение цели идемпотентно,
+   без мутации `pickedTargets`.
+- [x] Этап 22
+
+## Этап 23 — Архитектура серверной половины (v0.9.0)
+1. `net.js`: `class HttpError`, хелпер `route(methods, path, handler)` (единый
+   try/catch, 405, парсинг URL), `readJson(req, limit)`; переписать 14 маршрутов
+   `index.js` (ожидаемо −150 строк).
+2. Пер-route лимиты тела: `/settings` 64 КБ, `/tts|/speak` 1 МБ, `/stt` 32 МБ.
+3. Вынести `synthesizeByEngine` в `engines/tts.js`; объединить `/tts`↔`/speak`
+   в общий обработчик.
+4. `apply()`: разбить на `routes/settings.js`, `routes/local.js`, `routes/speak.js`,
+   `routes/stt.js`; `inject` сузить до обязательных, опциональные — `ctx.get()`;
+   каждый маршрут — отдельный `effect`.
+5. Perimeter: маскирование ключей в `GET /settings`; обрезка тел ответов апстрима
+   (≤200 символов); мягкая проверка `Host`/`Origin` (localhost-only) с логом.
+6. `local-engine.js` → `lib/local-engine/{index,process,models,status}.js`
+   (процесс/venv отдельно от моделей/статуса/скачивания).
+7. `requirements.txt`: явный `av`, комментарий `# Python >= 3.10`, проверка версии
+   в `ensurePython`; рекомендовать `requirements.lock`.
+- [ ] Этап 23
+
+## Этап 24 — Python hardening (остаток, v0.10.0)
+1. `ThreadPoolExecutor(max_workers=2)` вместо потока на соединение.
+2. LRU-эвикция кэша моделей + выгрузка при удалении через хост.
+3. Декод аудио **до** захвата `_whisper_lock`.
+4. Проверка `Origin`/`Sec-Fetch-Site`/`Host`; `server_version` не публикует версию Python.
+5. `/warm` матчит строго; `language` валидируется; `_load_piper` мапит ImportError → 409.
+6. `download_models.py`: возобновление `.part` (Range), проверка размера, `main()`
+   не логирует успех при частичной ошибке.
+7. Тесты: расширить `py-server-multipart.test.py` до реального Handler'а
+   (beam_size, лимиты, дренаж, /warm traversal); soft-skip `test:py` без python3.
+- [ ] Этап 24
+
+## Этап 25 — Клиент: остатки + инфраструктура (v0.10.0)
+1. Hotkey-поле: не глотать Tab/Esc-навигацию.
+2. Валидация: порт ≤65535, `asrEngine` через `includes` (как `ttsEngine`).
+3. `fallbackSpeakP`: `clearTimeout` в onend/onerror.
+4. `LocalEngineBox.call()`: один `refresh()`.
+5. Убрать отладочный `console.log` в `07-voice-chat-button.js:352`.
+6. Инфраструктура: `node --check` всех файлов в `npm test`, проверка синтаксиса
+   собранного бандла в `build-client.mjs`; `c8` покрытие; ESLint.
+7. Тесты на дыры: `rewrite.js`, `edge-tts` socket close, `readBody` лимиты,
+   `/latest-message`, `/local/stop`, traversal, пер-route 413.
+- [ ] Этап 25
+
+## Будущее (не в этом плане)
+- **Этап 26 — sidecar whisper.cpp + piper CLI** вместо Python: −0.5–1 ГБ установки,
+  холодный старт <2 с, реальная отмена через `kill` процесса инференса. 3–5 недель.
+- **Этап 27 — FastAPI/uvicorn** (если понадобится стриминг/много эндпоинтов) —
+  декларативная валидация pydantic, `StreamingResponse`.
+
+## Порядок и версии
+21 → 22 → 23 → 24 → 25. Этап 21 — горячий фикс (v0.8.5). Далее v0.9.0 (22–23),
+v0.10.0 (24–25). Каждый этап самодостаточен и проверяем `npm test`.

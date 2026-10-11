@@ -31,10 +31,12 @@ import {
 	resolveTtsEngine,
 	sanitizeSettings,
 	synthesizeWithCustomTts,
+	synthesizeWithMimoTts,
 	transcribe,
 	transcribeWithChatAsr
 } from "../lib/index.js";
 import { buildSsml, generateSecMsGec } from "../lib/edge-tts.js";
+import { ssmlRateFromPercent } from "../lib/shared.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -463,6 +465,17 @@ await testAsync("transcribe: завершающий слэш в baseUrl не д�
 	}
 });
 
+await testAsync("transcribe: пустой baseUrl → status 400 без сетевого запроса", async () => {
+	await assert.rejects(
+		() => transcribe(Buffer.from([1]), { engine: "siliconflow", baseUrl: "   ", model: "m", apiKey: "k" }),
+		(err) => {
+			assert.equal(err.status, 400);
+			assert.match(err.message, /Base URL/);
+			return true;
+		}
+	);
+});
+
 await testAsync("transcribe: нет apiKey → status 400, запрос не отправляется", async () => {
 	await assert.rejects(
 		() => transcribe(Buffer.from([1]), { engine: "siliconflow", baseUrl: "http://127.0.0.1:1/v1", model: "m", apiKey: "" }),
@@ -702,10 +715,34 @@ test("& < > экранируются", () => {
 	assert.match(xml, /A &amp; B &lt;tag&gt; "q"/);
 	assert.equal(xml.includes("A & B"), false);
 });
+test("Спецсимволы в voice/pitch/rate не вырываются из атрибутов SSML", () => {
+	const xml = ssml({ voice: "x'><script>alert(1)</script>", pitch: "+0Hz", rate: "+10%" });
+	assert.equal(xml.includes("<script>"), false, "тег не должен появиться дословно");
+	assert.match(xml, /&apos;/, "одиночная кавычка экранирована как &apos;");
+	assert.match(xml, /voice name='[^']*'/, "атрибут voice остался целым");
+});
+test("Кавычки в pitch/rate экранируются", () => {
+	const xml = ssml({ pitch: "\"><x", rate: "a'b" });
+	assert.equal(xml.includes('"><x'), false);
+	assert.match(xml, /pitch='&quot;&gt;&lt;x'/);
+	assert.match(xml, /rate='a&apos;b'/);
+});
 test("Оборачивается в полный документ speak (version + xmlns)", () => {
 	const xml = ssml({});
 	assert.ok(xml.startsWith("<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis'"));
 	assert.ok(xml.endsWith("</prosody></voice></speak>"));
+});
+
+console.log("\nСкорость речи: проценты → SSML rate");
+test("ssmlRateFromPercent: 100% → +0%, 110% → +10%, 50% → -50%", () => {
+	assert.equal(ssmlRateFromPercent(100), "+0%");
+	assert.equal(ssmlRateFromPercent(110), "+10%");
+	assert.equal(ssmlRateFromPercent(50), "-50%");
+});
+test("ssmlRateFromPercent: мусор → дефолт +10% (не NaN%)", () => {
+	assert.equal(ssmlRateFromPercent(undefined), "+10%");
+	assert.equal(ssmlRateFromPercent("abc"), "+10%");
+	assert.equal(ssmlRateFromPercent(NaN), "+10%");
 });
 
 // ---------- Локальный движок: ключ не нужен, порт берётся из адреса ----------
@@ -825,6 +862,51 @@ await testAsync("synthesizeWithCustomTts: custom без apiKey всё ещё 400
 		() => synthesizeWithCustomTts("привет", { engine: "custom", baseUrl: "http://127.0.0.1:1/v1", model: "tts-1", apiKey: "" }),
 		(err) => err.status === 400
 	);
+});
+
+// Регрессия v0.8.0: MiMo TTS падал с ReferenceError (CHAT_ASR_URL_RE/asRecord не
+// импортированы в engines/tts.js) — ни один тест этого не видел. Здесь путь
+// проходится целиком, включая ветку ошибки, где использовался asRecord.
+await testAsync("synthesizeWithMimoTts: без apiKey → 400", async () => {
+	await assert.rejects(
+		() => synthesizeWithMimoTts("привет", { baseUrl: "http://127.0.0.1:1/v1", model: "mimo-v2.5-tts", apiKey: "" }),
+		(err) => err.status === 400
+	);
+});
+
+await testAsync("synthesizeWithMimoTts: base64 из choices[0].message.audio.data → байты", async () => {
+	const payload = Buffer.from("MIMO-AUDIO").toString("base64");
+	let seen = null;
+	const { server, baseUrl } = await startFakeAsr((req, res, body) => {
+		seen = { url: req.url, payload: JSON.parse(body.toString("utf8")) };
+		res.writeHead(200, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ choices: [{ message: { audio: { data: payload } } }] }));
+	});
+	try {
+		const audio = await synthesizeWithMimoTts("привет", {
+			baseUrl: `${baseUrl}/v1`, model: "mimo-v2.5-tts", apiKey: "k", voice: "mimo_default"
+		});
+		assert.equal(audio.toString("latin1"), "MIMO-AUDIO");
+		assert.equal(seen.url, "/v1/chat/completions");
+		assert.equal(seen.payload.audio.voice, "mimo_default");
+	} finally {
+		await closeServer(server);
+	}
+});
+
+await testAsync("synthesizeWithMimoTts: ошибка с не-JSON телом → 502, без ReferenceError", async () => {
+	const { server, baseUrl } = await startFakeAsr((req, res) => {
+		res.writeHead(503, { "Content-Type": "text/plain" });
+		res.end("upstream down");
+	});
+	try {
+		await assert.rejects(
+			() => synthesizeWithMimoTts("привет", { baseUrl: `${baseUrl}/v1`, model: "m", apiKey: "k" }),
+			(err) => err.status === 502 && /upstream down/.test(err.message)
+		);
+	} finally {
+		await closeServer(server);
+	}
 });
 
 // ---------- Горячая клавиша запуска распознавания ----------

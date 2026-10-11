@@ -170,6 +170,20 @@ await test("setTargets() обновляет цели и сообщает об и
 	});
 });
 
+await test("setTargets(): путь и мусор вместо модели/голоса отклоняются", async () => {
+	const dataDir = await freshDataDir("targets-invalid");
+	await withEnv({ DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: undefined }, async () => {
+		const m = createLocalEngineManager({ whisperModel: "small", piperVoice: "ru_RU-irina-medium" });
+		assert.equal(m.setTargets({ whisperModel: "../../etc/passwd" }), false, "traversal в модели игнорируется");
+		assert.equal(m.setTargets({ whisperModel: "../models" }), false);
+		assert.equal(m.setTargets({ piperVoice: "ru_RU-irina-medium/../../.." }), false, "traversal в голосе игнорируется");
+		assert.equal(m.setTargets({ piperVoice: "ru RU/irina" }), false);
+		const st = await m.status();
+		assert.equal(st.whisperModel, "small", "цели не изменились");
+		assert.equal(st.piperVoice, "ru_RU-irina-medium");
+	});
+});
+
 await test("setTargets(): пустые значения игнорируются, повтор — не изменение", async () => {
 	const dataDir = await freshDataDir("targets-empty");
 	await withEnv({ DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: undefined }, async () => {
