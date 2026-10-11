@@ -14,8 +14,11 @@ import sys
 import threading
 import time
 import wave
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,6 +56,21 @@ MAX_STT_BODY = 64 * 1024 * 1024
 MAX_TTS_BODY = 1024 * 1024
 # Сквозной таймаут сокета: без него молчащий клиент держал поток вечно.
 REQUEST_TIMEOUT_S = 60
+
+# Пул на 2 потока вместо «поток на соединение»: инференс всё равно
+# сериализован _whisper_lock, а второй поток обслуживает параллельный /tts или
+# /health, пока идёт распознавание. Открытые «вхолостую» соединения при этом не
+# могут породить неограниченное число потоков (защита от исчерпания ресурсов).
+MAX_WORKERS = 2
+
+# Имена хостов, с которых принимаются запросы: сервер слушает только loopback,
+# а плагин обращается к нему из Node-процесса. Проверка Host защищает от
+# DNS-rebinding, когда чужой сайт резолвит свой домен в 127.0.0.1.
+LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+# Источники запроса, которые считаем локальными для Sec-Fetch-Site.
+LOCAL_FETCH_SITES = {"same-origin", "same-site", "none"}
+
 
 
 class EngineNotInstalledError(RuntimeError):
@@ -197,13 +215,18 @@ def parse_multipart(body: bytes, content_type: str) -> dict:
     return fields
 
 
-_whisper_models = {}
+# Кэши весов в памяти. OrderedDict, чтобы вытеснять по LRU: medium-модель
+# занимает ~1.5 ГБ, и держать все скачанные модели разом нельзя. При превышении
+# лимита выгружаем самую давно использованную (не ту, что читается сейчас).
+_whisper_models = OrderedDict()
+MAX_CACHED_WHISPER = 2
 # _whisper_lock сериализует инференс; _whisper_load_lock защищает саму загрузку
 # (её зовёт и /warm, в обход _whisper_lock). Без отдельного лока два параллельных
 # /warm и /stt грузили одну модель дважды — для medium это +1.5 ГБ RAM.
 _whisper_lock = threading.Lock()
 _whisper_load_lock = threading.Lock()
-_piper_voices = {}
+_piper_voices = OrderedDict()
+MAX_CACHED_PIPER = 2
 # Именно RLock, а не Lock: _synthesize() держит блокировку и внутри вызывает
 # _load_piper(), который берёт её же. Обычный threading.Lock не реентерабелен —
 # первая же озвучка Piper намертво зависала (поток ждал сам себя), и запрос
@@ -227,17 +250,26 @@ def _downloaded_whisper_models() -> set:
     return found
 
 
+def _evict_lru(cache: "OrderedDict", limit: int, kind: str):
+    """Вытеснить самые давно использованные элементы, пока не уложимся в лимит."""
+    while len(cache) > limit:
+        name, _ = cache.popitem(last=False)
+        logger.info("LRU-выгрузка из памяти: %s %s", kind, name)
+
+
 def _load_whisper(model_name: str):
     # Кэш ПО ИМЕНИ: раньше был один глобальный _whisper_model, и первая же загрузка
     # (обычно small) навсегда определяла модель для всех последующих запросов —
     # выбранная в настройках medium/tiny молча игнорировалась.
     if model_name in _whisper_models:
+        _whisper_models.move_to_end(model_name)   # отметка «используется сейчас»
         return _whisper_models[model_name]
 
     with _whisper_load_lock:
         # Второй раз за локом: между первой проверкой и захватом модель мог
         # загрузить параллельный запрос.
         if model_name in _whisper_models:
+            _whisper_models.move_to_end(model_name)
             return _whisper_models[model_name]
 
         # Сначала проверка наличия модели, потом импорт: иначе на машине без
@@ -265,12 +297,14 @@ def _load_whisper(model_name: str):
         )
         logger.info("faster-whisper model loaded: %s", model_name)
         _whisper_models[model_name] = model
+        _evict_lru(_whisper_models, MAX_CACHED_WHISPER, "faster-whisper")
         return model
 
 
 def _load_piper(voice_name: str):
     with _piper_lock:
         if voice_name in _piper_voices:
+            _piper_voices.move_to_end(voice_name)
             return _piper_voices[voice_name]
         # Валидация живёт здесь, а не в точках вызова: /warm раньше передавал
         # голос из query без проверки, и voice=../../../x заставлял сервер
@@ -301,6 +335,7 @@ def _load_piper(voice_name: str):
             # В некоторых сборках piper-tts ключа use_cuda нет
             voice = PiperVoice.load(str(model_path), config_path=str(config_path))
         _piper_voices[voice_name] = voice
+        _evict_lru(_piper_voices, MAX_CACHED_PIPER, "piper")
         logger.info("Piper voice loaded: %s", voice_name)
         return voice
 
@@ -378,12 +413,16 @@ def _transcribe(audio_bytes: bytes, model_name: str, language: str | None,
         beam = DEFAULT_BEAM_SIZE
     if beam <= 0:
         beam = DEFAULT_BEAM_SIZE
+    # Декодирование — тяжёлая CPU-операция и не зависит от модели. Держать на ней
+    # _whisper_lock нельзя: пока один запрос декодирует, остальные не могут начать
+    # транскрипцию, хотя сам инференс защищён. Поэтому сначала декодируем, потом
+    # берём лок.
+    audio = _decode_audio(audio_bytes)
+    logger.info("Decoded %d samples @ %d Hz", audio.size, SAMPLE_RATE)
     with _whisper_lock:
         load_started = time.monotonic()
         model = _load_whisper(model_name)
         load_seconds = time.monotonic() - load_started
-        audio = _decode_audio(audio_bytes)
-        logger.info("Decoded %d samples @ %d Hz", audio.size, SAMPLE_RATE)
         if load_seconds > 1:
             # Первая загрузка модели — обычно 5–30 с. Без этого в логе не видно,
             # что «подвисание» — это не зависание, а чтение весов с диска.
@@ -482,16 +521,87 @@ def _synthesize(text: str, voice_name: str, speed: float) -> bytes:
         return data
 
 
+def hostname_of(host_header: str) -> str:
+    """Имя хоста из заголовка Host без порта (IPv6-адрес в скобках сохраняем)."""
+    host = (host_header or "").strip()
+    if host.startswith("["):            # [::1]:8765
+        end = host.find("]")
+        return host[: end + 1].lower() if end != -1 else host.lower()
+    return host.rsplit(":", 1)[0].lower()
+
+
+def is_local_request(headers) -> bool:
+    """Запрос пришёл с loopback и не похож на межсайтовый?
+
+    Сервер слушает только 127.0.0.1, но это не мешает чужой странице обратиться
+    к localhost (DNS-rebinding/CSRF). Legit-путь — Node-процесс плагина: он не
+    присылает Origin и Sec-Fetch-Site. Если браузер прислал cross-site Origin
+    или Sec-Fetch-Site, запрос отклоняем.
+    """
+    if hostname_of(headers.get("Host", "")) not in LOCAL_HOSTNAMES:
+        return False
+    origin = headers.get("Origin")
+    if origin:
+        from urllib.parse import urlparse as _urlparse
+        if hostname_of(_urlparse(origin).netloc) not in LOCAL_HOSTNAMES:
+            return False
+    site = headers.get("Sec-Fetch-Site")
+    if site and site.lower() not in LOCAL_FETCH_SITES:
+        return False
+    return True
+
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer с ограниченным пулом потоков вместо потока на соединение.
+
+    process_request() из ThreadingMixIn создаёт новый поток на каждое соединение:
+    поток, который держит соединение открытым и ничего не шлёт, висит до
+    REQUEST_TIMEOUT_S, и таких «пустых» соединений можно открыть сколько угодно.
+    Здесь работа отдаётся фиксированному пулу, а лишние соединения ждут очереди.
+    """
+
+    daemon_threads = True
+
+    def __init__(self, *args, max_workers: int = MAX_WORKERS, **kwargs):
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="dsh-voice"
+        )
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        try:
+            self._executor.submit(self.process_request_thread, request, client_address)
+        except RuntimeError:
+            # Пул уже закрывается — корректно гасим соединение
+            self.shutdown_request(request)
+
+    def server_close(self):
+        super().server_close()
+        self._executor.shutdown(wait=False)
+
+
 class Handler(BaseHTTPRequestHandler):
     # Сквозной таймаут на чтение запроса и запись ответа: без него молчащий или
     # медленный клиент занимал поток навсегда (slowloris/half-open).
     timeout = REQUEST_TIMEOUT_S
-    # Не публикуем версию Python в заголовке Server.
+    # Не публикуем версию Python в заголовке Server: version_string() ниже
+    # отдаёт только имя сервера, без «Python/3.x».
     server_version = "dsh-voice-server"
     sys_version = ""
 
+    def version_string(self):
+        return self.server_version
+
     def log_message(self, format, *args):
         logger.info("%s - %s", self.address_string(), format % args)
+
+    def handle_one_request(self):
+        # Флаг «заголовки уже ушли» живёт на экземпляре Handler'а, а он при
+        # keep-alive переиспользуется для всех запросов соединения. Без сброса
+        # второй и последующие ответы молча подавлялись (соединение закрывалось
+        # без ответа на запрос).
+        self._headers_sent = False
+        super().handle_one_request()
 
     def send_response(self, code, message=None):
         # Флаг «заголовки уже ушли»: после обрыва клиента попытка отправить
@@ -532,8 +642,19 @@ class Handler(BaseHTTPRequestHandler):
         if length > MAX_STT_BODY:
             self.close_connection = True
 
+    def _reject_non_local(self) -> bool:
+        """True, если запрос не локальный (тогда уже отправлен 403)."""
+        if is_local_request(self.headers):
+            return False
+        self._discard_body()
+        self._send_json(403, {"error": "forbidden: request must come from localhost"})
+        return True
+
     def do_GET(self):
-        if self.path == "/health":
+        if self._reject_non_local():
+            return
+        path = urlparse(self.path).path
+        if path == "/health":
             self._send_json(200, {
                 "status": "ok",
                 "models": {
@@ -541,7 +662,7 @@ class Handler(BaseHTTPRequestHandler):
                     "piper": list(SUPPORTED_PIPER_VOICES),
                 },
             })
-        elif self.path == "/v1/models":
+        elif path == "/v1/models":
             # То, что ждёт любой OpenAI-совместимый клиент: что реально доступно
             self._send_json(200, {
                 "object": "list",
@@ -550,7 +671,7 @@ class Handler(BaseHTTPRequestHandler):
                     for m in sorted(_downloaded_whisper_models())
                 ],
             })
-        elif self.path == "/warm" or self.path.startswith("/warm?"):
+        elif path == "/warm":
             self._handle_warm()
         else:
             self._send_json(404, {"error": "not found"})
@@ -563,14 +684,22 @@ class Handler(BaseHTTPRequestHandler):
         /warm сразу после старта сервера, в фоне, и к моменту первого запроса
         модель уже в памяти.
         """
-        from urllib.parse import parse_qs, urlparse
-
         query = parse_qs(urlparse(self.path).query)
         model_name = field_text((query.get("model") or [""])[0].encode(), "small")
         voice_name = field_text((query.get("voice") or [""])[0].encode(), "ru_RU-irina-medium")
 
+        # Строгая проверка до загрузки: имена уходят в пути файлов, а /warm — это
+        # GET без тела, который легко дёрнуть со стороны. Раньше сюда проходил
+        # voice=../../.. и открывал любой .onnx на диске.
+        if model_name not in SUPPORTED_WHISPER_MODELS:
+            self._send_json(400, {"error": f"unsupported model: {model_name}"})
+            return
+        if not VOICE_NAME_RE.match(voice_name):
+            self._send_json(400, {"error": f"invalid voice name: {voice_name}"})
+            return
+
         result = {"model": model_name, "voice": voice_name, "modelLoaded": False,
-                  "voiceLoaded": False, "seconds": 0.0}
+                  "voiceLoaded": False}
         started = time.monotonic()
         errors = []
         try:
@@ -583,19 +712,53 @@ class Handler(BaseHTTPRequestHandler):
             result["voiceLoaded"] = True
         except Exception as err:  # noqa: BLE001 — прогрев не должен ронять сервер
             errors.append(str(err))
-        result["seconds"] = round(time.monotonic() - started, 2)
+        result["seconds"] = round(time.monotonic() - started, 3)
         result["errors"] = errors
         # 200 даже с ошибками: прогрев — фоновая операция, отвечать 4xx незачем
         self._send_json(200, result)
 
     def do_POST(self):
-        if self.path == "/v1/audio/transcriptions":
+        if self._reject_non_local():
+            return
+        path = urlparse(self.path).path
+        if path == "/v1/audio/transcriptions":
             self._handle_transcription()
-        elif self.path == "/v1/audio/speech":
+        elif path == "/v1/audio/speech":
             self._handle_speech()
+        elif path == "/unload":
+            self._handle_unload()
         else:
             self._discard_body()
             self._send_json(404, {"error": "not found"})
+
+    def _handle_unload(self):
+        """Выгрузить модель/голос из памяти (после удаления файлов хостом).
+
+        Хост удаляет каталоги моделей, но загруженные в RAM веса остаются, пока
+        процесс жив. Этот эндпоинт позволяет освободить память сразу. Параметры
+        необязательны: без них выгружается всё.
+        """
+        try:
+            body = read_request_body(self.rfile, self.headers, 64 * 1024)
+            data = json.loads(body) if body else {}
+        except (ValueError, json.JSONDecodeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        model = str(data.get("model", "") or "")
+        voice = str(data.get("voice", "") or "")
+        unloaded = []
+        with _whisper_load_lock:
+            for name in list(_whisper_models):
+                if not model or name == model:
+                    del _whisper_models[name]
+                    unloaded.append({"type": "whisper", "name": name})
+        with _piper_lock:
+            for name in list(_piper_voices):
+                if not voice or name == voice:
+                    del _piper_voices[name]
+                    unloaded.append({"type": "piper", "name": name})
+        self._send_json(200, {"unloaded": unloaded})
 
     def _handle_transcription(self):
         content_type = self.headers.get("Content-Type", "")
@@ -702,6 +865,14 @@ class Handler(BaseHTTPRequestHandler):
         # вторым ответом поверх 200 и ломало keep-alive.
         try:
             wav_bytes = _synthesize(text, voice_name, speed)
+        except EngineNotInstalledError as e:
+            # piper-tts не установлен — исправляемое состояние (кнопка «Установить»), не сбой
+            self._send_json(409, {"error": str(e), "voice": voice_name})
+            return
+        except FileNotFoundError as e:
+            # Голос значится поддерживаемым, но файла на диске нет — тот же класс: 409
+            self._send_json(409, {"error": str(e), "voice": voice_name})
+            return
         except Exception as e:
             logger.exception("Synthesis failed")
             self._send_json(500, {"error": str(e)})
@@ -722,7 +893,7 @@ def main():
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
     args = parser.parse_args()
 
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server = BoundedThreadingHTTPServer((args.host, args.port), Handler)
     logger.info("Starting server on %s:%d", args.host, args.port)
     logger.info("Data directory: %s", DATA_DIR)
     try:

@@ -68,29 +68,49 @@ def piper_voice_dir(voice_name: str) -> str:
     )
 
 
+def _part_path(dest: Path) -> Path:
+    return dest.with_name(dest.name + ".part")
+
+
 def download_file(url: str, dest: Path, attempts: int = ATTEMPTS):
-    """Скачать url в dest через .part-файл. Прерванная закачка не остаётся «готовой»."""
+    """Скачать url в dest через .part-файл, умея продолжать прерванную закачку.
+
+    Крупные модели весят сотни мегабайт: обрыв на 90% не должен означать «начинай
+    сначала». .part сохраняется между попытками, а в запрос добавляется Range,
+    чтобы сервер отдал остаток. Если сервер не поддерживает Range (ответил 200
+    вместо 206), честно перекачиваем с нуля. По завершении сверяем размер с
+    Content-Length — недокачанный файл не должен попасть на место готового.
+    """
     import urllib.request
 
     if dest.exists() and dest.stat().st_size > 0:
         logger.info("Already exists: %s", dest)
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_name(dest.name + ".part")
+    tmp = _part_path(dest)
     last_error = None
     for attempt in range(1, attempts + 1):
+        offset = tmp.stat().st_size if tmp.exists() else 0
+        headers = {"User-Agent": "dsh-voice-chat/1.0"}
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
         logger.info(
-            "Downloading (попытка %d/%d) %s -> %s", attempt, attempts, url, dest
+            "Downloading (попытка %d/%d%s) %s -> %s",
+            attempt, attempts, f", с {offset} байт" if offset else "", url, dest,
         )
         try:
-            request = urllib.request.Request(
-                url, headers={"User-Agent": "dsh-voice-chat/1.0"}
-            )
+            request = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(request, timeout=CONNECT_TIMEOUT_S) as resp:
-                total = int(resp.headers.get("Content-Length") or 0)
-                received = 0
+                status = getattr(resp, "status", None) or resp.getcode()
+                if offset and status != 206:
+                    # Сервер проигнорировал Range и отдаёт файл целиком: начинаем заново
+                    logger.info("  сервер не поддержал докачку (код %s) — качаем сначала", status)
+                    offset = 0
+                content_length = int(resp.headers.get("Content-Length") or 0)
+                total = offset + content_length if content_length else 0
+                received = offset
                 last_report = 0.0
-                with open(tmp, "wb") as out:
+                with open(tmp, "ab" if offset else "wb") as out:
                     while True:
                         # Уже прочитанный буфер дочитываем с бо́льшим таймаутом
                         chunk = resp.read(1024 * 1024)
@@ -102,7 +122,7 @@ def download_file(url: str, dest: Path, attempts: int = ATTEMPTS):
                         if total and now - last_report > 5:
                             logger.info(
                                 "  %d%% (%.1f/%.1f МБ)",
-                                received * 100 // total,
+                                min(100, received * 100 // total),
                                 received / 1e6,
                                 total / 1e6,
                             )
@@ -115,8 +135,7 @@ def download_file(url: str, dest: Path, attempts: int = ATTEMPTS):
         except Exception as exc:  # сеть/прокси/антивирус — единого типа исключений нет
             last_error = exc
             logger.warning("  не получилось: %s: %s", type(exc).__name__, exc)
-            if tmp.exists():
-                tmp.unlink()
+            # .part НЕ удаляем: со следующей попыткой продолжим с текущего места
             if attempt < attempts:
                 time.sleep(2 * attempt)
     raise RuntimeError(
@@ -185,12 +204,14 @@ def main():
     logger.info("Data directory: %s", DATA_DIR)
     logger.info("Piper mirrors: %s", ", ".join(PIPER_BASES))
 
+    piper_error = None
     try:
         download_piper_voice(args.piper_voice)
     except Exception as exc:
         # Piper без голоса не полезен, но Whisper ещё можно скачать: сообщаем и идём дальше,
         # итоговую ошибку соберёт вызывающая сторона (проверит обе модели на диске)
         logger.error("Piper: %s", exc)
+        piper_error = exc
         if args.only_voice:
             # Пользователь просил конкретный голос — молча скачивать ещё и Whisper незачем
             raise
@@ -200,6 +221,14 @@ def main():
         return
 
     download_whisper_model(args.whisper_model)
+
+    # Успех объявляем только если скачалось ВСЁ: раньше частичная ошибка Piper
+    # завершалась строкой «All models downloaded successfully», и хвост лога врал.
+    if piper_error is not None:
+        raise RuntimeError(
+            f"Голос Piper не скачан: {piper_error}. Модель faster-whisper скачана, "
+            "но локальный движок не готов без голоса."
+        )
     logger.info("All models downloaded successfully")
 
 

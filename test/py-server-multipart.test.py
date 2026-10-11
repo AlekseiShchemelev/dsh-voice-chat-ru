@@ -239,4 +239,162 @@ try:
 finally:
     httpd.shutdown()
 
+
+# ---------------------------------------------------------------------------
+# Настоящий Handler: лимиты тела, дренаж при ошибке, /warm traversal, локальность.
+
+print("\nРеальный Handler: лимиты, дренаж, /warm traversal, проверка локальности")
+
+import threading
+
+# Тяжёлый инференс не нужен: проверяем HTTP-слой. Заглушки повторяют сигнатуры и
+# записывают вызовы, чтобы проверить проброс beam_size/model/language.
+_transcribe_calls = []
+
+
+def _fake_transcribe(audio, model, language, beam_size=None):
+    _transcribe_calls.append({"model": model, "language": language, "beam": beam_size})
+    return "распознано"
+
+
+server._transcribe = _fake_transcribe
+server._synthesize = lambda text, voice, speed: b"RIFF" + b"\x00" * 40 + b"WAVE"
+# Дренаж тела нужен именно для keep-alive (HTTP/1.1): включаем его только в тесте,
+# чтобы проверить, что после ошибки соединение не «плывёт».
+server.Handler.protocol_version = "HTTP/1.1"
+
+real = server.BoundedThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+real_port = real.server_address[1]
+threading.Thread(target=real.serve_forever, daemon=True).start()
+
+
+def request_bytes(method, path, body=b"", headers=None, keep_alive=False):
+    hdrs = {"Host": "127.0.0.1", "Connection": "keep-alive" if keep_alive else "close"}
+    if headers:
+        hdrs.update(headers)
+    if body and "Content-Length" not in hdrs:
+        hdrs["Content-Length"] = str(len(body))
+    head = f"{method} {path} HTTP/1.1\r\n" + "".join(
+        f"{k}: {v}\r\n" for k, v in hdrs.items()) + "\r\n"
+    return head.encode() + body
+
+
+def one_shot(method, path, body=b"", headers=None):
+    sock = socket.create_connection(("127.0.0.1", real_port), timeout=6)
+    sock.sendall(request_bytes(method, path, body, headers, keep_alive=False))
+    data = read_response(sock)
+    sock.close()
+    return data
+
+
+def multipart_with_beam(boundary=b"X", model=b"small", beam=b"7"):
+    return (
+        b"--" + boundary + b"\r\n"
+        b'Content-Disposition: form-data; name="model"\r\n\r\n' + model + b"\r\n"
+        b"--" + boundary + b"\r\n"
+        b'Content-Disposition: form-data; name="language"\r\n\r\nru\r\n'
+        b"--" + boundary + b"\r\n"
+        b'Content-Disposition: form-data; name="beam_size"\r\n\r\n' + beam + b"\r\n"
+        b"--" + boundary + b"\r\n"
+        b'Content-Disposition: form-data; name="file"; filename="r.webm"\r\n'
+        b"Content-Type: audio/webm\r\n\r\n" + b"\x01\x02\x03\x04" + b"\r\n"
+        b"--" + boundary + b"--\r\n"
+    )
+
+
+try:
+    def real_beam_size_passthrough():
+        _transcribe_calls.clear()
+        data = one_shot(
+            "POST", "/v1/audio/transcriptions", multipart_with_beam(),
+            {"Content-Type": "multipart/form-data; boundary=X"},
+        )
+        assert b" 200 " in data, data[:200]
+        assert _transcribe_calls, "обработчик не дошёл до распознавания"
+        last = _transcribe_calls[-1]
+        assert last["beam"] == "7", f"beam_size не проброшен: {last}"
+        assert last["model"] == "small" and last["language"] == "ru", last
+
+    check("beam_size/model/language пробрасываются в распознавание",
+          real_beam_size_passthrough)
+
+    def tts_body_limit():
+        # Content-Length больше лимита: сервер обязан ответить 400, не читая тело
+        sock = socket.create_connection(("127.0.0.1", real_port), timeout=6)
+        header = (
+            b"POST /v1/audio/speech HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: " + str(server.MAX_TTS_BODY + 1).encode() + b"\r\n\r\n"
+        )
+        sock.sendall(header)
+        data = read_response(sock)
+        sock.close()
+        assert b" 400 " in data, f"лимит тела TTS не сработал: {data[:200]!r}"
+
+    check("тело больше лимита TTS → 400 без чтения", tts_body_limit)
+
+    def drain_after_error_keeps_connection():
+        # Не multipart: обработчик дренирует тело и отвечает 400, после чего
+        # то же соединение обязано обслужить следующий запрос (иначе «плывёт»).
+        sock = socket.create_connection(("127.0.0.1", real_port), timeout=6)
+        body = b"x" * 4096
+        sock.sendall(request_bytes(
+            "POST", "/v1/audio/transcriptions", body,
+            {"Content-Type": "text/plain"}, keep_alive=True,
+        ))
+        sock.sendall(request_bytes("GET", "/health", keep_alive=False))
+        data = b""
+        sock.settimeout(4)
+        try:
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+        except socket.timeout:
+            pass
+        sock.close()
+        assert b" 400 " in data, f"ожидался 400: {data[:200]!r}"
+        assert b" 200 " in data and b'"status": "ok"' in data, \
+            f"соединение не дренировано, второй запрос потерян: {data[:300]!r}"
+
+    check("дренаж тела после ошибки сохраняет keep-alive",
+          drain_after_error_keeps_connection)
+
+    def warm_path_traversal_rejected():
+        assert b" 400 " in one_shot("GET", "/warm?model=small&voice=../../etc/passwd"), \
+            "voice с / должен отклоняться"
+        assert b" 400 " in one_shot("GET", "/warm?model=../../evil&voice=ru_RU-irina-medium"), \
+            "неизвестная модель должна отклоняться"
+        assert b" 404 " in one_shot("GET", "/warmXYZ"), "/warm должен матчиться строго"
+
+    check("/warm: traversal и неизвестная модель → 400, путь строго", warm_path_traversal_rejected)
+
+    def locality_guard():
+        assert b" 403 " in one_shot("GET", "/health", headers={"Host": "evil.com"}), \
+            "чужой Host должен отклоняться"
+        assert b" 403 " in one_shot(
+            "GET", "/health",
+            headers={"Host": "127.0.0.1", "Origin": "http://evil.com"}), \
+            "чужой Origin должен отклоняться"
+        assert b" 403 " in one_shot(
+            "GET", "/health",
+            headers={"Host": "127.0.0.1", "Sec-Fetch-Site": "cross-site"}), \
+            "cross-site должен отклоняться"
+        assert b" 200 " in one_shot("GET", "/health", headers={"Host": "127.0.0.1"}), \
+            "локальный запрос не должен отклоняться"
+
+    check("Origin/Sec-Fetch-Site/Host: чужое отклоняется, локальное — нет", locality_guard)
+
+    def server_header_hides_python():
+        data = one_shot("GET", "/health", headers={"Host": "127.0.0.1"})
+        head = data.split(b"\r\n\r\n", 1)[0].lower()
+        assert b"python" not in head, f"заголовок Server раскрывает версию Python: {head!r}"
+
+    check("заголовок Server не публикует версию Python", server_header_hides_python)
+finally:
+    real.shutdown()
+    real.server_close()
+
 print(f"\n{passed} пройдено")

@@ -504,7 +504,7 @@ removeModel) и при смене целей `setTargets()` — иначе `stat
    не логирует успех при частичной ошибке.
 7. Тесты: расширить `py-server-multipart.test.py` до реального Handler'а
    (beam_size, лимиты, дренаж, /warm traversal); soft-skip `test:py` без python3.
-- [ ] Этап 24
+- [x] Этап 24
 
 ## Этап 25 — Клиент: остатки + инфраструктура (v0.10.0)
 1. Hotkey-поле: не глотать Tab/Esc-навигацию.
