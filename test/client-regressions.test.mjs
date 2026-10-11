@@ -107,13 +107,6 @@ function controlByLabel(tree, labelText) {
 	assert.ok(found, `Поле не найдено: «${labelText}»`);
 	return found;
 }
-/** Input внутри контрола (у порта контрол — обёртка с input и кнопкой). */
-function inputOf(control) {
-	let input = null;
-	walk(control, (node) => { if (!input && node.type === "input") input = node; });
-	assert.ok(input, "в контроле должен быть input");
-	return input;
-}
 function onChangeOf(tree, labelText) {
 	const control = controlByLabel(tree, labelText);
 	assert.equal(typeof control.props.onChange, "function", `Поле «${labelText}» должно иметь onChange`);
@@ -611,7 +604,7 @@ await test("Вторая ступень озвучки шлёт POST /dsh-voice-
 	const long = "Ответ модели. ".repeat(300).trim();     // > 3000 символов
 	assert.ok(long.length > 3000, "нужен длинный ответ, иначе тест не про Query-Length Limit");
 
-	const { impl, calls } = recordingFetch((url, options) => {
+	const { impl, calls } = recordingFetch((url) => {
 		if (url.startsWith("/dsh-voice-chat/speak")) {
 			// edge-tts упал — сценарий, ради которого существует вторая ступень
 			return jsonResponse({ error: "edge-tts недоступен" }, 502);

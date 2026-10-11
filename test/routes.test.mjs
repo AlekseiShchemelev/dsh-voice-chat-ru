@@ -12,9 +12,6 @@ import http from "node:http";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
-import { fileURLToPath } from "node:url";
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 let passed = 0;
 async function test(name, fn) {

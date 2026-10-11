@@ -516,7 +516,44 @@ removeModel) и при смене целей `setTargets()` — иначе `stat
    собранного бандла в `build-client.mjs`; `c8` покрытие; ESLint.
 7. Тесты на дыры: `rewrite.js`, `edge-tts` socket close, `readBody` лимиты,
    `/latest-message`, `/local/stop`, traversal, пер-route 413.
-- [ ] Этап 25
+
+Сделано:
+
+1. **Hotkey-поле**: `Tab` больше не перехватывается (фокус уходит), `Esc` не
+   глотается (настройки закрываются клавиатурой); `preventDefault` остался
+   только на записываемом сочетании и на `Delete`/`Backspace`.
+2. **Порт** зажимается на вводе (`>65535` не показывается вовсе);
+   `normalizeAsrEngine` переведён на `ASR_ENGINES.includes` — единый стиль
+   с `normalizeTtsEngine`.
+3. `fallbackSpeakP` снимает 30-секундный страховочный таймер в `onend`/`onerror`
+   (раньше каждая фраза держала таймер до конца).
+4. `LocalEngineBox.call()` опрашивает `/local/status` один раз (было два:
+   в try и в finally).
+5. Отладочный `console.log` о завершении хода убран.
+6. **Инфраструктура**: `scripts/syntax-check.mjs` (`node --check` по всем js-
+   файлам lib/src/scripts/test + собранного бандла; header/footer — половинки,
+   их проверяет именно бандл) в начале `npm test`; `build-client.mjs` сам
+   проверяет синтаксис собранного (`assertBundleParses`); `npm run coverage`
+   (c8, ~92% строк); `npm run lint` (ESLint 9 flat config; для src/client
+   no-undef/no-unused-vars выключены — куски делят общее замыкание, это
+   задокументировано в конфиге).
+7. **Новый `test/gaps.test.mjs`** (33 теста): пересказ (`rewriteWithHarness` —
+   склейка чанков, обрез 6000, reason.kind=error/aborted → настоящий сбой,
+   повтор без reasoningEffort, пустой результат, отсутствие llm); синтез Edge
+   на подделке WebSocket (аудио собрано, сокет закрыт, таймаут закрывает сокет);
+   лимиты `readBody` (413) и пер-route 413 для /settings (64 КБ), /tts (1 МБ),
+   /stt (32 МБ); `/latest-message` (400/404, text- и kind-блоки, обрез 5000);
+   `/local/stop` идемпотентен; traversal в query (status/install/download-model/
+   download-voice/remove-model + юнит валидаторов); POST /settings с массивом
+   и битым JSON → 400.
+8. **Найден и закрыт скрытый регресс Edge TTS (с v0.9.0)**: при рефакторинге
+   socket-close в finally `resolvePromise()` потерял `Buffer.concat(chunks)` —
+   успешный синтез Edge возвращал `undefined` и падал с `TypeError` на
+   `audio.length`, озвучка деградировала в браузерный TTS. Тест с подделкой
+   WebSocket поймал это первым прогоном; фасад `lib/index.js` расширен
+   (`isValidPiperVoice/isValidWhisperModel/BODY_LIMITS/HttpError/MAX_SPEECH_CHARS/
+   readJson/route`) — тестам дыр не нужно знать внутренности модулей.
+- [x] Этап 25
 
 ## Будущее (не в этом плане)
 - **Этап 26 — sidecar whisper.cpp + piper CLI** вместо Python: −0.5–1 ГБ установки,

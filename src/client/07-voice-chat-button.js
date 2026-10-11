@@ -175,10 +175,14 @@
 				const u = new SpeechSynthesisUtterance(text);
 				u.lang = settingsValue?.speechLang ?? "ru-RU";
 				u.rate = (settingsValue?.ratePercent ?? 110) / 100;
-				u.onend = () => resolve(true);
-				u.onerror = () => resolve(false);
+				// Страховка от «браузер забыл вызвать onend»: синтез мог не запуститься,
+				// и Promise без таймера повис бы, заблокировав очередь озвучки.
+				// Таймер снимаем при любом из двух обратных вызовов — иначе очередь
+				// каждая фраза держала лишние 30 секунд «в фоне».
+				const safety = window.setTimeout(() => resolve(true), 30000);
+				u.onend = () => { window.clearTimeout(safety); resolve(true); };
+				u.onerror = () => { window.clearTimeout(safety); resolve(false); };
 				window.speechSynthesis.speak(u);
-				window.setTimeout(() => resolve(true), 30000); // Запасной вариант: долго нет обратного вызова
 			} catch (err) {
 				console.error("[dsh-voice-chat] fallback speak failed", err);
 				resolve(false);
@@ -353,7 +357,6 @@
 					}
 					// Запасной вариант при сбое интерфейса: разбор DOM (что получится)
 					if (!text) text = extractLatestAssistantText() || "";
-					console.log("[dsh-voice-chat] turn завершён, получен текст:", text ? text.slice(0, 80) + (text.length > 80 ? "…" : "") : "(пусто)");
 					if (!text || text === lastSpokenTextRef.current) return;
 					lastSpokenTextRef.current = text;
 					playTts(text);

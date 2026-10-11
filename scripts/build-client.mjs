@@ -22,6 +22,8 @@
  * Запуск: node scripts/build-client.mjs [--check]
  */
 
+import { spawnSync } from "node:child_process";
+import { writeFileSync, unlinkSync } from "node:fs";
 import { readFile, writeFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,6 +49,23 @@ export const CLIENT_PARTS = [
 	"footer.js"
 ];
 
+/** Проверка, что собранный бандл — валидный JS (раньше недозакрытая скобка ловилась только тестами на импорте). */
+export function assertBundleParses(built) {
+	const tmp = path.join(
+		process.env.TMPDIR || process.env.TMP || "/tmp",
+		`dsh-vc-bundle-${process.pid}.js`
+	);
+	writeFileSync(tmp, built, "utf8");
+	try {
+		const { status, stderr } = spawnSync(process.execPath, ["--check", tmp], { encoding: "utf8" });
+		if (status !== 0) {
+			throw new Error("собранный бандл не проходит синтаксическую проверку:\n" + (stderr || ""));
+		}
+	} finally {
+		try { unlinkSync(tmp); } catch { /* ignore */ }
+	}
+}
+
 /** Собрать содержимое lib/client.js из кусков. */
 export async function buildClient() {
 	const available = (await readdir(SRC_DIR)).filter((name) => name.endsWith(".js")).sort();
@@ -69,6 +88,7 @@ export async function buildClient() {
 if (import.meta.url === `file://${process.argv[1]}`) {
 	const check = process.argv.includes("--check");
 	const built = await buildClient();
+	assertBundleParses(built);
 	if (check) {
 		const current = await readFile(OUT_FILE, "utf8").catch(() => "");
 		if (current !== built) {

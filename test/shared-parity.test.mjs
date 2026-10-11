@@ -29,7 +29,6 @@ import {
 	normalizeHotkey,
 	hotkeyLabel,
 	hotkeyFromEvent,
-	cleanForTts,
 	localPortFromUrl,
 	localUrlFromPort
 } from "../lib/shared.js";
@@ -97,7 +96,6 @@ function clientFn(name, deps = {}) {
 		new RegExp(`^\\s*(const|function)\\s+${name}`),
 		literal.trimStart().startsWith("function") ? "return function" : "return"
 	);
-	// eslint-disable-next-line no-new-func
 	return new Function(...Object.keys(deps), body)(...Object.values(deps));
 }
 
@@ -105,7 +103,6 @@ function clientFn(name, deps = {}) {
 function clientValue(name) {
 	const literal = clientDecl(client.src, name);
 	assert.ok(literal, `${name} должен быть объявлен в lib/client.js`);
-	// eslint-disable-next-line no-new-func
 	return new Function(`return (${literal});`)();
 }
 
@@ -113,11 +110,10 @@ const client = { src: await readFile(CLIENT_SRC, "utf8") };
 
 console.log("\nКонстанты: клиентская копия == lib/shared.js");
 
-for (const name of ["ASR_ENGINE_DEFAULTS", "TTS_ENGINE_DEFAULTS", "LOCAL_ASR_MODELS", "LOCAL_TTS_VOICES"]) {
+	for (const name of ["ASR_ENGINE_DEFAULTS", "TTS_ENGINE_DEFAULTS", "LOCAL_ASR_MODELS", "LOCAL_TTS_VOICES"]) {
 	await test(name, async () => {
 		const literal = clientDecl(client.src, name);
 		assert.ok(literal, `${name} должен быть объявлен в lib/client.js`);
-		// eslint-disable-next-line no-new-func
 		const fromClient = new Function(`return (${literal});`)();
 		const fromShared = { ASR_ENGINE_DEFAULTS, TTS_ENGINE_DEFAULTS, LOCAL_ASR_MODELS, LOCAL_TTS_VOICES }[name];
 		assert.deepEqual(fromClient, fromShared,

@@ -372,7 +372,12 @@
 					React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
 						React.createElement("input", {
 							style: { ...SECTION_STYLES.input, flex: 1 }, value: localPort, inputMode: "numeric",
-							onChange: (e) => { touchedRef.current = true; setLocalPort(String(e.target.value).replace(/[^0-9]/g, "")); }
+							onChange: (e) => {
+								touchedRef.current = true;
+								const digits = String(e.target.value).replace(/[^0-9]/g, "");
+								// Порт — 16-битное число: больше 65535 принять нельзя, показывать бессмысленно
+								setLocalPort(Number(digits) > 65535 ? "65535" : digits);
+							}
 						}),
 						React.createElement("button", {
 							type: "button", style: SECTION_STYLES.secondary,
@@ -616,14 +621,23 @@
 							readOnly: true,
 							value: hotkeyLabel(hotkey),
 							title: hotkey || "горячая клавиша выключена",
-							// Клик по полю = «начни вводить»: первое же нажатие запоминается
+							// Клик по полю = «начни вводить»: первое же нажатие запоминается.
+							// Tab и Esc не перехватываем — поле не должно запирать фокус
+							// и мешать закрыть настройки клавиатурой.
 							onKeyDown: (e) => {
-								e.preventDefault();
-								e.stopPropagation();
+								if (e.key === "Tab") return;
 								if (e.key === "Escape") { touchedRef.current = true; setHotkey(DEFAULT_HOTKEY); return; }
-								if (e.key === "Delete" || e.key === "Backspace") { touchedRef.current = true; setHotkey(""); return; }
+								if (e.key === "Delete" || e.key === "Backspace") {
+									e.preventDefault();
+									e.stopPropagation();
+									touchedRef.current = true;
+									setHotkey("");
+									return;
+								}
 								const combo = hotkeyFromEvent(e);
 								if (!combo) return;
+								e.preventDefault();
+								e.stopPropagation();
 								touchedRef.current = true;
 								setHotkey(combo);
 							},

@@ -13,8 +13,11 @@
   "type": "module",
   "main": "lib/index.js",
   "scripts": {
-    "test": "node test/settings.test.mjs && node test/client-build.test.mjs && node test/client-settings.test.mjs && node test/client-regressions.test.mjs && node test/host-smoke.mjs && node test/client-stt-timeout.test.mjs && node test/shared-parity.test.mjs && node test/index-unit.test.mjs && node test/local-engine.test.mjs && node test/local-model-selection.test.mjs && node test/local-engine-fast-path.test.mjs && node test/routes.test.mjs && node test/host-routes.test.mjs && node test/live-dialog.test.mjs && npm run test:py",
-    "test:routes": "node test/routes.test.mjs",
+    "test": "node scripts/syntax-check.mjs && node test/settings.test.mjs && node test/client-build.test.mjs && node test/client-settings.test.mjs && node test/client-regressions.test.mjs && node test/host-smoke.mjs && node test/client-stt-timeout.test.mjs && node test/shared-parity.test.mjs && node test/index-unit.test.mjs && node test/local-engine.test.mjs && node test/local-model-selection.test.mjs && node test/local-engine-fast-path.test.mjs && node test/routes.test.mjs && node test/gaps.test.mjs && node test/host-routes.test.mjs && node test/live-dialog.test.mjs && npm run test:py",
+    "test:routes": "node test/routes.test.mjs && node test/gaps.test.mjs",
+    "test:gaps": "node test/gaps.test.mjs",
+    "lint": "eslint .",
+    "coverage": "c8 --include \"lib/**\" --include \"src/**\" --include \"scripts/**\" --reporter text --reporter html npm test",
     "build:client": "node scripts/build-client.mjs",
     "check:client": "node scripts/build-client.mjs --check",
     "test:settings": "node test/settings.test.mjs && node test/client-settings.test.mjs && node test/host-smoke.mjs",
@@ -82,5 +85,11 @@
   "engines": {
     "node": ">=22"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "c8": "^10.1.3",
+    "eslint": "^9.39.5",
+    "globals": "^17.13.0"
+  }
 }

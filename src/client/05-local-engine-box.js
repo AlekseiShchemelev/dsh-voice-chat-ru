@@ -72,11 +72,13 @@
 					const data = await resp.json().catch(() => ({}));
 					if (!resp.ok) throw new Error((data && data.error) || `HTTP ${resp.status}`);
 					setState(data.status || null);
-					await refresh();
 				} catch (e) {
 					setErr((e && e.message ? e.message : String(e)));
 				} finally {
 					setBusy("");
+					// Один refresh на весь вызов: свежий статус опрашиваем ровно
+					// один раз — раньше здесь было два (в try и в finally), и каждая
+					// кнопка дёргала /local/status вдвое чаще, чем нужно.
 					await refresh();
 				}
 			}, [refresh]);

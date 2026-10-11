@@ -390,7 +390,6 @@ await test("Чекбокс «Постоянный диалог» существ�
 		let found = null;
 		walk(tree, (node) => {
 			if (!found && node.type === "label") {
-				const kids = node.children || [];
 				const text = textOf(node);
 				if (text.includes("Постоянный диалог")) found = node;
 			}

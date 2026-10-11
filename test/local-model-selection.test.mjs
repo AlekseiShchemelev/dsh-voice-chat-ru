@@ -395,7 +395,7 @@ await test("ensureStarted(portA) затем ensureStarted(portB): второй �
 	// «Сервер» на portB — обычный node-процесс, Python не нужен
 	const portA = await freePort();
 	const portB = await freePort();
-	const venv = await fakeVenv(dataDir, {
+	await fakeVenv(dataDir, {
 		body: [`exec ${process.execPath} -e 'require("node:http").createServer((q,s)=>{s.writeHead(200,{"Content-Type":"application/json"});s.end("{}")}).listen(${portA},"127.0.0.1")'`]
 	});
 	startNodeHealthServer(portB);
@@ -433,7 +433,7 @@ await test("параллельные ensureStarted() поднимают ОДИН
 	// было «сервер остановлен (сигнал SIGTERM)», а идущий запрос — ECONNRESET.
 	const dataDir = await freshDataDir("race");
 	const port = await freePort();
-	const venv = await fakeVenv(dataDir, {
+	await fakeVenv(dataDir, {
 		body: [`exec ${process.execPath} -e 'require("node:http").createServer((q,s)=>{s.writeHead(200,{"Content-Type":"application/json"});s.end("{}")}).listen(${port},"127.0.0.1")'`]
 	});
 	await withEnv({ DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: undefined }, async () => {
@@ -465,7 +465,7 @@ await test("неудачный запуск не убивает сервер, п
 	const dataDir = await freshDataDir("race-foreign");
 	const good = await freePort();
 	const dead = await freePort();
-	const venv = await fakeVenv(dataDir, {
+	await fakeVenv(dataDir, {
 		body: [`exec ${process.execPath} -e 'require("node:http").createServer((q,s)=>{s.writeHead(200,{"Content-Type":"application/json"});s.end("{}")}).listen(${good},"127.0.0.1")'`]
 	});
 	await withEnv({ DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: undefined }, async () => {
