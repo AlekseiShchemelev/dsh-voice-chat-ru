@@ -1,5 +1,10 @@
+# Требуется Python >= 3.10 (см. проверку версии в lib/local-engine.js: ensurePython):
+# portable-сборка ставит 3.12, но с DSH_VOICE_PYTHON можно подключить системный
+# интерпретатор.
 # faster-whisper тянет av сам, но мы декодируем аудио им напрямую (см. server.py:
-# внутренний decode_audio faster-whisper несовместим со свежим PyAV)
+# внутренний decode_audio faster-whisper несовместим со свежим PyAV), поэтому
+# зависимость объявлена явно — версия PyAV не должна «уехать» вместе с faster-whisper.
+av>=10
 faster-whisper>=1.0.0
 # piper-tts переписан в 1.3 (ветка piper1-gpl, сейчас 1.8.x): synthesize_stream_raw()
 # УБРАН, speed задаётся через SynthesisConfig(length_scale=...). py/server.py
@@ -7,3 +12,6 @@ faster-whisper>=1.0.0
 # верхнюю: на 1.8.x проверено.
 piper-tts>=1.2.0,<2
 numpy>=1.21
+
+# Рекомендуется зафиксировать точные версии (requirements.lock) перед релизом:
+#   python -m pip freeze > py/requirements.lock

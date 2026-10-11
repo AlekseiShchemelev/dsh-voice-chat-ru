@@ -435,6 +435,17 @@ await test("ensurePython: сломанный DSH_VOICE_PYTHON → ошибка, 
 	});
 });
 
+await test("ensurePython: слишком старый DSH_VOICE_PYTHON → понятная ошибка (>= 3.10)", async () => {
+	const dataDir = await freshDataDir("ensure-python-old");
+	const bin = path.join(dataDir, "old-python3");
+	// Отвечает на `--version` успешно, но на `-c ...sys.version_info...` печатает 3.8
+	await writeFile(bin, "#!/bin/sh\ncase \"$*\" in *-c*) echo 3.8 ;; esac\nexit 0\n", "utf8");
+	await chmod(bin, 0o755);
+	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: bin, PATH: "" } }, async () => {
+		await assert.rejects(() => createLocalEngineManager().ensurePython(), /слишком старый/);
+	});
+});
+
 await test("ensureVenv: готовый venv переиспользуется (без пересоздания и без pip)", async () => {
 	const dataDir = await freshDataDir("ensure-venv-reuse");
 	const venv = await fakeVenv(dataDir);
