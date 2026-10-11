@@ -463,7 +463,7 @@ class Handler(BaseHTTPRequestHandler):
                     "piper": list(SUPPORTED_PIPER_VOICES),
                 },
             })
-        elif self.path in ("/v1/models", "/models"):
+        elif self.path == "/v1/models":
             # То, что ждёт любой OpenAI-совместимый клиент: что реально доступно
             self._send_json(200, {
                 "object": "list",
@@ -472,8 +472,43 @@ class Handler(BaseHTTPRequestHandler):
                     for m in sorted(_downloaded_whisper_models())
                 ],
             })
+        elif self.path.startswith("/warm"):
+            self._handle_warm()
         else:
             self._send_json(404, {"error": "not found"})
+
+    def _handle_warm(self):
+        """Прогрев: загрузить модель и голос в память заранее.
+
+        Первое распознавание на холодном сервере читает веса с диска — это
+        5–30 с, и пользователь успевает решить, что всё зависло. Плагин дёргает
+        /warm сразу после старта сервера, в фоне, и к моменту первого запроса
+        модель уже в памяти.
+        """
+        from urllib.parse import parse_qs, urlparse
+
+        query = parse_qs(urlparse(self.path).query)
+        model_name = field_text((query.get("model") or [""])[0].encode(), "small")
+        voice_name = field_text((query.get("voice") or [""])[0].encode(), "ru_RU-irina-medium")
+
+        result = {"model": model_name, "voice": voice_name, "modelLoaded": False,
+                  "voiceLoaded": False, "seconds": 0.0}
+        started = time.monotonic()
+        errors = []
+        try:
+            _load_whisper(model_name)
+            result["modelLoaded"] = True
+        except (ModelNotDownloadedError, EngineNotInstalledError) as err:
+            errors.append(str(err))
+        try:
+            _load_piper(voice_name)
+            result["voiceLoaded"] = True
+        except Exception as err:  # noqa: BLE001 — прогрев не должен ронять сервер
+            errors.append(str(err))
+        result["seconds"] = round(time.monotonic() - started, 2)
+        result["errors"] = errors
+        # 200 даже с ошибками: прогрев — фоновая операция, отвечать 4xx незачем
+        self._send_json(200, result)
 
     def do_POST(self):
         if self.path == "/v1/audio/transcriptions":

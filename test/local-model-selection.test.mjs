@@ -267,6 +267,10 @@ await test("modelsReady=false, если голос Piper выбран друго
 		m.setTargets({ piperVoice: "ru_RU-denis-medium" });
 		assert.equal((await m.status()).modelsReady, false, "нужен выбранный голос, а не любой");
 		await makeVoice(dataDir, "ru_RU-denis-medium");
+		// status() кэшируется на втору (STATUS_CACHE_MS) — каждый вызов стоит
+		// процессов Python, а панель опрашивает раз в 2 с. Ждём окно, чтобы
+		// убедиться, что статус всё-таки отражает диск, а не вечное «готово».
+		await new Promise((r) => setTimeout(r, 1_100));
 		assert.equal((await m.status()).modelsReady, true);
 	});
 });
