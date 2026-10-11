@@ -486,9 +486,13 @@ removeModel) и при смене целей `setTargets()` — иначе `stat
    (≤200 символов); мягкая проверка `Host`/`Origin` (localhost-only) с логом.
 6. `local-engine.js` → `lib/local-engine/{index,process,models,status}.js`
    (процесс/venv отдельно от моделей/статуса/скачивания).
+   **Отложено:** менеджер — единый ~1300-строчный closure с общим изменяемым
+   состоянием (child, installPromise/operationKind, кэши готовности/статуса,
+   targets); разбиение чисто структурное и рискованное. Вынести в отдельный
+   рефакторинг после 25.
 7. `requirements.txt`: явный `av`, комментарий `# Python >= 3.10`, проверка версии
    в `ensurePython`; рекомендовать `requirements.lock`.
-- [ ] Этап 23
+- [x] Этап 23
 
 ## Этап 24 — Python hardening (остаток, v0.10.0)
 1. `ThreadPoolExecutor(max_workers=2)` вместо потока на соединение.

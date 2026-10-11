@@ -79,14 +79,19 @@ async function freshDataDir(name) {
  * после чего либо проксирует вызов в настоящий python3, либо падает.
  * Ни сети, ни моделей.
  */
-async function fakePython(dir, { name = "python3", mode = "proxy", logName = "calls.log", delayMs = 0 } = {}) {
+async function fakePython(dir, { name = "python3", mode = "proxy", logName = "calls.log", delayMs = 0, modelsDelayMs = null } = {}) {
 	await mkdir(dir, { recursive: true });
 	const log = path.join(dir, logName);
 	const bin = path.join(dir, name);
+	// Задержка нужна тестам прогресса: без неё короткая фаза (python/venv)
+	// проходит быстрее, чем успевает опрос статуса. modelsDelayMs задаёт особую
+	// (долгую) задержку для py/download_models.py, чтобы фазу «models» можно было
+	// поймать в status() несмотря на кэш STATUS_CACHE_MS (иначе тест ловит гонку).
+	const sleepLine = modelsDelayMs
+		? `case "$*" in *download_models.py*) sleep ${(modelsDelayMs / 1000).toFixed(3)} ;; *) sleep ${(delayMs / 1000).toFixed(3)} ;; esac`
+		: (delayMs ? `sleep ${(delayMs / 1000).toFixed(3)}` : "");
 	const lines = [
-		// Задержка нужна тестам прогресса: без неё короткая фаза (python/venv)
-		// проходит быстрее, чем успевает опрос статуса
-		delayMs ? `sleep ${(delayMs / 1000).toFixed(3)}` : "",
+		sleepLine,
 		"#!/bin/sh",
 		`printf '%s :: %s\\n' "$DSH_VOICE_DATA_DIR" "$*" >> '${log}'`,
 		'if [ "$1" = "--version" ]; then exit 0; fi',
@@ -525,14 +530,16 @@ await test("install(): идёт по трём фазам, стадия видн�
 	const dataDir = await freshDataDir("install-progress");
 	// Модели качаются дольше всего — эту фазу видно в статусе без гонок;
 	// короткие фазы (python/venv) проверяем по журналу установки
-	const venv = await fakeVenv(dataDir, { delayMs: 250 });
+	// Фаза models должна быть заметно длиннее кэша status() (STATUS_CACHE_MS=1000),
+	// иначе опрос раз за разом получает закэшированный снимок и не видит стадию.
+	const venv = await fakeVenv(dataDir, { delayMs: 300, modelsDelayMs: 2500 });
 	await makeModels(dataDir);
 	await withState({ env: { DSH_VOICE_DATA_DIR: dataDir, DSH_VOICE_PYTHON: "python3" } }, async () => {
 		const manager = createLocalEngineManager();
 		const done = manager.install();
 		let sawInstalling = false;
 		let sawModels = false;
-		for (let i = 0; i < 40 && !sawModels; i++) {
+		for (let i = 0; i < 160 && !sawModels; i++) {
 			const st = await manager.status();
 			if (st.installing) sawInstalling = true;
 			if (st.installStage === "models") sawModels = true;
