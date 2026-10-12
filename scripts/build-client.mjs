@@ -43,7 +43,8 @@ export const CLIENT_PARTS = [
 	"03-styles-voices.js",
 	"04-hotkey-browser-asr.js",
 	"05-local-engine-box.js",
-	"06-settings-bus-and-section.js",
+	"06-settings-bus.js",
+	"06-settings-section.js",
 	"07-voice-chat-button.js",
 	"08-plugin.js",
 	"footer.js"

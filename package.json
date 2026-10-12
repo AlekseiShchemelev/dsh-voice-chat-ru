@@ -20,6 +20,7 @@
     "coverage": "c8 --include \"lib/**\" --include \"src/**\" --include \"scripts/**\" --reporter text --reporter html npm test",
     "build:client": "node scripts/build-client.mjs",
     "check:client": "node scripts/build-client.mjs --check",
+    "lock:py": "node scripts/lock-py.mjs",
     "test:settings": "node test/settings.test.mjs && node test/client-settings.test.mjs && node test/host-smoke.mjs",
     "test:client": "node test/client-settings.test.mjs && node test/client-regressions.test.mjs",
     "test:regressions": "node test/client-regressions.test.mjs",
@@ -42,10 +43,12 @@
   "files": [
     "lib",
     "py",
+    "!py/__pycache__",
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
     "MANUAL.md",
+    "docs/manual",
     "LICENSE"
   ],
   "dsh": {

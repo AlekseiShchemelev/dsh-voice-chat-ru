@@ -45,7 +45,8 @@ window.__ModuleLoader__.load({ id: "dsh-voice-chat", factory: (require) => { …
 | `03-styles-voices.js` | `SECTION_STYLES` (объект стилей всех полей) и пресеты голосов Edge/MiMo |
 | `04-hotkey-browser-asr.js` | разбор и подпись сочетаний клавиш, диагностика Web Speech API |
 | `05-local-engine-box.js` | блок управления локальным движком: статус, установка, модели, порт, тема списков |
-| `06-settings-bus-and-section.js` | шина настроек, `useSettings`/`readySettings`, подписка на модель диалога, страница настроек и `BrowserAsrCheckBlock` |
+| `06-settings-bus.js` | шина настроек (одна копия `/settings` на весь модуль), `useSettings`/`readySettings`, подписка на модель диалога |
+| `06-settings-section.js` | страница настроек голосового чата (`VoiceChatSettingsSection`) и `BrowserAsrCheckBlock` |
 | `07-voice-chat-button.js` | кнопки 🎤/🔊 у поля ввода: запись, распознавание, очередь озвучки, постоянный диалог, горячая клавиша |
 | `08-plugin.js` | `repairPersistedDrafts` и `apply()` — регистрация в слотах `settings.section` и `conversation.input.right` |
 | `footer.js` | хвост модуля (`exports.apply`, `exports.inject`) |

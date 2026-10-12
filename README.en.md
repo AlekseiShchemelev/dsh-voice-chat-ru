@@ -4,7 +4,7 @@
 
 A Doubao-style voice chat plugin for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI: click 🎤 and talk — the AI's reply is read back to you aloud. UI, hints and system prompts are in Russian, and the default speech language is `ru-RU`.
 
-> 📖 Full user manual (Russian): [MANUAL.md](MANUAL.md).
+> 📖 Full user manual (Russian): [MANUAL.md](MANUAL.md) (table of contents; sections live in [`docs/manual/`](docs/manual/)).
 >
 > Fork of [maoyuching/dsh-voice-chat](https://github.com/maoyuching/dsh-voice-chat) (MIT). Original work © 2026 maoyuching; this fork adds the Russian localization, speech-language and speech-rate controls, browser and fully offline engines, and a continuous live-dialog mode with voice barge-in.
 
@@ -113,14 +113,23 @@ The `local` engine serves faster-whisper (ASR) and Piper (TTS) on `127.0.0.1:876
 
 ## Structure
 
-- `lib/index.js` — host half: `/stt` (ASR, dual protocol: OpenAI multipart + MiMo chat/completions), `/tts` (Edge/MiMo/custom/local), `/speak` (rewrite + synthesize), `/settings`, `/local/*`;
-- `lib/client.js` — browser half: mic/mute buttons, silence detection, in-browser recognition, single-channel playback, continuous dialog with barge-in, configurable push-to-talk hotkey, WAV conversion, and the settings form injected into DSH's dialog;
+The browser half is assembled from pieces: `src/client/*.js` are concatenated by `scripts/build-client.mjs` into **`lib/client.js`** — a generated file, do not edit it (sources live in `src/client/`).
+
+- `lib/index.js` — host facade: `apply()`, routes `/stt` (ASR, dual protocol: OpenAI multipart + MiMo chat/completions), `/tts` (Edge/MiMo/custom/local), `/speak` (rewrite + synthesize), `/settings`, `/local/*`;
+- `lib/routes/` — the routes themselves, one file per group (`settings`, `local`, `speak`, `stt`);
+- `lib/net.js` — shared HTTP helpers: `route()`, `readBody`/`readJson` with body limits, `json()`;
+- `lib/settings.js` — settings storage: isolated `asr.<engine>` / `tts.<engine>` slots, key masking, atomic writes, legacy config migration;
+- `lib/shared.js` — engine/voice lists, defaults and normalizers shared by host and client (parity is enforced by `test/shared-parity.test.mjs`);
+- `lib/engines/asr.js`, `lib/engines/tts.js` — speech recognition and synthesis per engine;
+- `lib/rewrite.js` — rewrites the AI reply before speaking it (so reasoning is not read aloud);
 - `lib/edge-tts.js` — inline edge-tts protocol client (Microsoft's free read-aloud service);
 - `lib/local-engine.js` — offline engine manager: portable Python, venv, models, spawn/stop of `py/server.py`;
 - `py/server.py` — stdlib-only OpenAI-compatible shim over faster-whisper and Piper;
 - `py/download_models.py` — model preloading (Piper + faster-whisper);
-- `test/` — tests: `settings`, `client-settings`, `host-smoke` (host routes), `index-unit`, `local-engine`, `live-dialog`; run with `npm test`;
+- `scripts/` — `build-client.mjs` (builds `lib/client.js`) and `syntax-check.mjs` (`node --check` over all sources);
+- `test/` — tests: `settings`, `client-settings`, `client-regressions`, `host-smoke`, `host-routes` (real `node:http`), `index-unit`, `routes`/`gaps` (routes and limits), `local-engine`/`local-model-selection`/`local-engine-fast-path`, `shared-parity`, `live-dialog`; run with `npm test`;
 - `test/diagnose-tts.mjs` — one-command readout diagnostics (`npm run diagnose:tts`);
+- `docs/plan.md` — working plan and stage history of the development; `docs/manual/` — user manual sections (index — `MANUAL.md`);
 - `cordis.patch.yml` — inserts the `dsh-voice-chat` line + config examples;
 - `settings.local.json` — overrides saved from the settings dialog (generated at runtime, never committed); since v0.4 it stores per-engine slots under `asr.<engine>` / `tts.<engine>`.
 

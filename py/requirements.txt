@@ -13,5 +13,7 @@ faster-whisper>=1.0.0
 piper-tts>=1.2.0,<2
 numpy>=1.21
 
-# Рекомендуется зафиксировать точные версии (requirements.lock) перед релизом:
-#   python -m pip freeze > py/requirements.lock
+# Рекомендуется зафиксировать точные версии перед релизом:
+#   npm run lock:py            # берёт venv плагина, пишет py/requirements.lock
+#   npm run lock:py -- --python /путь/к/python3   # если окружение своё
+# Затем установка у пользователей идёт из lock: python -m pip install -r py/requirements.lock

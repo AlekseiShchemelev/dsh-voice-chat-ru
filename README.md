@@ -4,7 +4,7 @@
 
 Плагин голосового диалога для [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI: нажми 🎤 и говори, ответы AI автоматически озвучиваются. Интерфейс, подсказки и системные промпты — на русском, речь по умолчанию русская.
 
-> 📖 Полное руководство пользователя см. в [MANUAL.md](MANUAL.md) (установка / использование / настройка / FAQ / принцип работы).
+> 📖 Полное руководство пользователя: [MANUAL.md](MANUAL.md) — оглавление, разделы лежат в [`docs/manual/`](docs/manual/) (установка / использование / настройка / FAQ / принцип работы).
 >
 > Форк [maoyuching/dsh-voice-chat](https://github.com/maoyuching/dsh-voice-chat) (MIT). Оригинал — автор maoyuching; здесь добавлены русская локализация, выбор языка и скорости речи, браузерные и офлайновые движки, «Постоянный диалог» с перебиванием.
 
@@ -115,14 +115,23 @@ dsh plugin --profile web add dsh-voice-chat
 
 ## Структура
 
-- `lib/index.js` — хост-часть: маршруты `/stt` (ASR, двойной протокол OpenAI multipart и MiMo chat/completions), `/tts` (Edge/MiMo/пользовательский/local), `/speak` (пересказ + синтез), `/settings`, `/local/*`;
-- `lib/client.js` — браузерная часть: кнопки 🎤/🔊, детектирование тишины, распознавание в браузере, одноканальное воспроизведение, «Постоянный диалог» с перебиванием, настраиваемая клавиша запуска речи (push-to-talk), конвертация записи в WAV, а также форма настроек в диалоге DSH;
+Браузерная половина собирается из кусков: `src/client/*.js` склеивает `scripts/build-client.mjs` в **`lib/client.js`** — генерируемый файл, его править нельзя (исходники — в `src/client/`).
+
+- `lib/index.js` — хост-фасад: `apply()`, маршруты `/stt` (ASR, двойной протокол OpenAI multipart и MiMo chat/completions), `/tts` (Edge/MiMo/пользовательский/local), `/speak` (пересказ + синтез), `/settings`, `/local/*`;
+- `lib/routes/` — сами маршруты, по одному файлу на группу (`settings`, `local`, `speak`, `stt`);
+- `lib/net.js` — общие HTTP-утилиты: `route()`, `readBody`/`readJson` с лимитами тел, `json()`;
+- `lib/settings.js` — хранение настроек: изолированные слоты `asr.<движок>` / `tts.<движок>`, маскирование ключей, атомарная запись, миграция старых конфигов;
+- `lib/shared.js` — списки движков/голосов, дефолты и нормализаторы, общие для хоста и клиента (паритет держит `test/shared-parity.test.mjs`);
+- `lib/engines/asr.js`, `lib/engines/tts.js` — распознавание и озвучка по движкам;
+- `lib/rewrite.js` — пересказ ответа AI перед озвучкой (чтобы не читать рассуждения);
 - `lib/edge-tts.js` — встроенный клиент протокола edge-tts (бесплатная служба Microsoft Edge);
 - `lib/local-engine.js` — менеджер офлайн-движка: portable Python, venv, модели, запуск/остановка `py/server.py`;
 - `py/server.py` — Python-шимм OpenAI-совместимого API поверх faster-whisper и Piper (только стандартная библиотека);
 - `py/download_models.py` — предзагрузка моделей (Piper + faster-whisper);
-- `test/` — тесты: `settings`, `client-settings`, `host-smoke` (маршруты хоста), `index-unit` (юнит-тесты хоста), `local-engine` (менеджер офлайн-движка и `py/server.py`), `live-dialog` (постоянный диалог); запуск — `npm test`;
+- `scripts/` — `build-client.mjs` (сборка `lib/client.js`) и `syntax-check.mjs` (`node --check` по всем исходникам);
+- `test/` — тесты: `settings`, `client-settings`, `client-regressions`, `host-smoke`, `host-routes` (настоящий `node:http`), `index-unit`, `routes`/`gaps` (маршруты и лимиты), `local-engine`/`local-model-selection`/`local-engine-fast-path`, `shared-parity`, `live-dialog`; запуск — `npm test`;
 - `test/diagnose-tts.mjs` — однокомандная диагностика цепочки озвучивания (`npm run diagnose:tts`): реальный синтез по каждому движку и прямые вызовы `/tts`, `/speak`;
+- `docs/plan.md` — рабочий план и история этапов разработки; `docs/manual/` — разделы руководства пользователя (оглавление — `MANUAL.md`);
 - `cordis.patch.yml` — вставка строки `dsh-voice-chat` + примеры конфигурации;
 - `settings.local.json` — переопределения из панели настроек (генерируется в рантайме, не в git); структура v0.4+ — слоты `asr.<движок>` / `tts.<движок>`.
 

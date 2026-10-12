@@ -7,7 +7,8 @@
  *   - диагностика сетевых сбоев: 502 с адресом и подсказкой вместо «fetch failed».
  *
  * Полностью офлайн: ASR/TTS — это node:http-серверы на свободных портах,
- * локальный движок не установлен, Python не нужен.
+ * локальный движок не установлен, Python не нужен — DSH_VOICE_PYTHON указывает
+ * на несуществующий путь, поэтому /local/install падает до venv и pip.
  * Настройки и каталог данных — во временной папке (DSH_VOICE_SETTINGS_FILE /
  * DSH_VOICE_DATA_DIR задаются ДО импорта lib/index.js), боевой
  * settings.local.json тест не трогает.
@@ -25,6 +26,12 @@ const TMP_ROOT = await mkdtemp(path.join(os.tmpdir(), "dsh-vc-host-routes-"));
 process.env.DSH_VOICE_DATA_DIR = TMP_ROOT;
 // Обязательно до импорта: иначе тест писал бы в боевой settings.local.json
 process.env.DSH_VOICE_SETTINGS_FILE = path.join(TMP_ROOT, "settings.local.json");
+// Фоновая установка обязана падать мгновенно и без сети. Без этой переменной
+// /local/install реально создаёт venv в TMP_ROOT и запускает pip install
+// (faster-whisper/av — сотни МБ), а финальный rm наезжает на пишущий процесс:
+// ENOTEMPTY, uncaught, весь npm test падает. Тесту нужны только ЦЕЛИ установки
+// (whisperModel/piperVoice в status), до venv дело не должно доходить.
+process.env.DSH_VOICE_PYTHON = path.join(TMP_ROOT, "no-python");
 
 let passed = 0;
 async function test(name, fn) {
@@ -328,5 +335,8 @@ await test("Все маршруты, которые вызывает клиен�
 });
 
 host.close();
-await rm(TMP_ROOT, { recursive: true, force: true });
+// maxRetries — страховка от хвостовой записи: менеджер движка мог успеть создать
+// каталог (logs/) уже во время rm. С DSH_VOICE_PYTHON на несуществующий путь
+// установка падает до файловых операций, но цена одной лишней попытки — ничтожна.
+await rm(TMP_ROOT, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 console.log(`\n${passed} пройдено${process.exitCode ? " (есть падения)" : ""}`);
