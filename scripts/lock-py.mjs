@@ -95,11 +95,18 @@ if (missing.length) {
 	process.exit(1);
 }
 
+// В шапку идёт версия Python, а не абсолютный путь: путь машинно-специфичен и
+// в закоммиченном lock выглядел бы мусором.
+const verProc = spawnSync(python, ["-c", "import sys;print('%d.%d.%d'%sys.version_info[:3])"], {
+	encoding: "utf8"
+});
+const pythonVersion = (verProc.stdout || "").trim() || "неизвестно";
+
 const header = [
 	"# Точные версии Python-зависимостей, проверенные с py/server.py.",
 	"# Сгенерировано из рабочего окружения (npm run lock:py) — НЕ редактировать руками.",
 	"# Для восстановления: python -m pip install -r py/requirements.lock",
-	`# Источник: ${python}, ${new Date().toISOString().slice(0, 10)}`,
+	`# Источник: Python ${pythonVersion}, ${new Date().toISOString().slice(0, 10)}`,
 	""
 ].join("\n");
 
