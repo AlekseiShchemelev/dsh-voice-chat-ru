@@ -34,7 +34,23 @@ jobs:
         run: npm run check:client
 
       - name: Тесты
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test-output.log
+
+      # Хвост лога падения одной аннотацией: job-логи без прав недоступны,
+      # а аннотации видно через check-runs API. Помогает разбирать «падает
+      # только в CI» без доступа к раннеру.
+      - name: Причина падения
+        if: failure()
+        shell: bash
+        run: |
+          [ -f test-output.log ] || exit 0
+          tail -n 120 test-output.log \
+            | sed -e 's/%/%25/g' -e 's/\r//g' \
+            | awk '{printf "%s%%0A", $0}' > /tmp/ann.txt
+          printf '::error::%s\n' "$(cat /tmp/ann.txt)"
 
   coverage:
     name: Покрытие (порог)
