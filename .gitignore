@@ -3,6 +3,6 @@ pnpm-workspace.yaml
 *.mp3
 settings.local.json
 __pycache__/
-.opencode/
 coverage/
+.opencode/
 opencode.json
