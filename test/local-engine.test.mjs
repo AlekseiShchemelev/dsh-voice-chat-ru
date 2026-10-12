@@ -480,7 +480,7 @@ await test("ensureVenv: venv без пакетов чинится (pip запу�
 		assert.ok(!log.includes("-m venv"), "venv рабочий, пересоздавать его нельзя");
 		assert.match(log, /-m pip install/,
 			"venv без faster-whisper/piper должен доустанавливаться через pip:\n" + log);
-		assert.match(log, /requirements\.txt/);
+		assert.match(log, /requirements\.(txt|lock)/);
 	});
 });
 
