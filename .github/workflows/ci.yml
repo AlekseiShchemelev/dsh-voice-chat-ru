@@ -47,10 +47,12 @@ jobs:
         shell: bash
         run: |
           [ -f test-output.log ] || exit 0
-          tail -n 120 test-output.log \
-            | sed -e 's/%/%25/g' -e 's/\r//g' \
-            | awk '{printf "%s%%0A", $0}' > /tmp/ann.txt
-          printf '::error::%s\n' "$(cat /tmp/ann.txt)"
+          # Первый блок падения (FAIL + стек) — коротко, чтобы аннотация не усеклась.
+          awk '/FAIL |not ok/{hit=1} hit{print; if(++n>=15) exit}' test-output.log > /tmp/ann.txt
+          [ -s /tmp/ann.txt ] || tail -n 5 test-output.log > /tmp/ann.txt
+          sed -e 's/%/%25/g' -e 's/\r//g' -i /tmp/ann.txt
+          awk '{printf "%s%%0A", $0}' /tmp/ann.txt > /tmp/ann2.txt
+          printf '::error::%s\n' "$(cat /tmp/ann2.txt)"
 
   coverage:
     name: Покрытие (порог)
