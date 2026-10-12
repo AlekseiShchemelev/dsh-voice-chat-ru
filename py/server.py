@@ -627,7 +627,14 @@ class Handler(BaseHTTPRequestHandler):
 
         Если ответ отдаётся раньше, чем прочитано тело (404/400), при HTTP/1.1
         остаток интерпретируется как следующий запрос — соединение «плывёт».
+        У chunked-тела нет Content-Length, поэтому его дренируем по фреймингу
+        (иначе первый же неизвестный путь с chunked-телом ломал соединение).
         """
+        encoding = (self.headers.get("Transfer-Encoding") or "").lower()
+        if "chunked" in encoding:
+            if not self._discard_chunked_body():
+                self.close_connection = True
+            return
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -641,6 +648,43 @@ class Handler(BaseHTTPRequestHandler):
             remaining -= len(chunk)
         if length > MAX_STT_BODY:
             self.close_connection = True
+
+    def _discard_chunked_body(self) -> bool:
+        """Выбросить chunked-тело, не накапливая его. False — фрейминг битый.
+
+        Логика фрейминга та же, что в read_request_body(), но без буферизации
+        байтов: тело нужно лишь «съесть», чтобы следующий запрос разбирался
+        с верной позиции.
+        """
+        total = 0
+        while True:
+            line = self.rfile.readline(1024)
+            if not line:
+                return False
+            size_text = line.split(b";", 1)[0].strip()
+            try:
+                size = int(size_text, 16)
+            except ValueError:
+                return False
+            if size == 0:
+                # Завершающий CRLF и возможные трейлеры — до пустой строки
+                while True:
+                    trailer = self.rfile.readline(1024)
+                    if trailer in (b"", b"\r\n", b"\n"):
+                        break
+                return True
+            total += size
+            if total > MAX_STT_BODY:
+                return False
+            remaining = size
+            while remaining > 0:
+                chunk = self.rfile.read(min(65536, remaining))
+                if not chunk:
+                    return False
+                remaining -= len(chunk)
+            head = self.rfile.peek(2)[:2] if hasattr(self.rfile, "peek") else self.rfile.read(2)
+            if head == b"\r\n":
+                self.rfile.read(2)
 
     def _reject_non_local(self) -> bool:
         """True, если запрос не локальный (тогда уже отправлен 403)."""

@@ -362,6 +362,43 @@ try:
     check("дренаж тела после ошибки сохраняет keep-alive",
           drain_after_error_keeps_connection)
 
+    def drain_chunked_body_keeps_connection():
+        # У chunked-тела нет Content-Length: дренаж обязан идти по фреймингу,
+        # иначе байты тела разбираются как следующий запрос и соединение «плывёт».
+        sock = socket.create_connection(("127.0.0.1", real_port), timeout=6)
+        body = b"y" * 3000
+        head = (
+            b"POST /unknown-path HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Connection: keep-alive\r\n"
+            b"Transfer-Encoding: chunked\r\n\r\n"
+        )
+        # Два чанка, чтобы проверить и многчанковый фрейминг
+        chunked = (
+            b"%x\r\n" % (len(body) // 2) + body[: len(body) // 2] + b"\r\n"
+            b"%x\r\n" % (len(body) - len(body) // 2) + body[len(body) // 2:] + b"\r\n"
+            b"0\r\n\r\n"
+        )
+        sock.sendall(head + chunked)
+        sock.sendall(request_bytes("GET", "/health", keep_alive=False))
+        data = b""
+        sock.settimeout(4)
+        try:
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+        except socket.timeout:
+            pass
+        sock.close()
+        assert b" 404 " in data, f"ожидался 404: {data[:200]!r}"
+        assert b" 200 " in data and b'"status": "ok"' in data, \
+            f"chunked-тело не дренировано, второй запрос потерян: {data[:300]!r}"
+
+    check("дренаж chunked-тела (без Content-Length) сохраняет keep-alive",
+          drain_chunked_body_keeps_connection)
+
     def warm_path_traversal_rejected():
         assert b" 400 " in one_shot("GET", "/warm?model=small&voice=../../etc/passwd"), \
             "voice с / должен отклоняться"
